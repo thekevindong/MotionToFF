@@ -2,7 +2,9 @@
 
 Use this file when starting a **new chat** or onboarding a teammate. The repo is a SteelHacks XIII project: practice high-stakes conversations with **composure-aware** AI feedback (Presage webcam + Nemotron judge/director + Gemini interviewer).
 
-**Remote:** [github.com/thekevindong/MotionToFF](https://github.com/thekevindong/MotionToFF.git) (after first push).
+**Remote:** [github.com/thekevindong/MotionToFF](https://github.com/thekevindong/MotionToFF.git)
+
+**Merge status:** Phases 1–3 done — one Next.js `frontend/`, interview + report wired to FastAPI. See [plan.md](plan.md) for Phase 4+ (keys, Presage, deploy).
 
 ---
 
@@ -11,13 +13,13 @@ Use this file when starting a **new chat** or onboarding a teammate. The repo is
 ```
 You are continuing MotionToFF (practice interview app). Read handoff.md and plan.md first.
 
-Stack: FastAPI backend (:8000), Vite+React frontend (:5173). All model roles are separate Python modules with mocks today.
+Stack: FastAPI backend (:8000), Next.js frontend (:3000) in frontend/. Model seams in backend/ are mocks unless keys are set.
 
-Done: scaffold steps 1–6 (health, mock seams, /turn loop, /diag media test, report page). Step 5 Presage smoke is NOT verified — composure stays mock. Step 7 sidecar not built yet.
+Done: health + /turn spine; Next /interview → GET /session + POST /turn; /report; lib/api.ts + lib/api-types.ts; CORS :3000; ElevenLabs routes /api/stt + /api/tts (need ELEVENLABS_API_KEY in frontend/.env.local). Presage smoke (step 5) not verified; sidecar (step 7) not built.
 
-Next priorities (user order): git is on MotionToFF → wire API keys (Gemini, Nemotron, ElevenLabs) into interviewer.py / judge.py / director.py without breaking the /turn shape → optional v0/Vercel UI via VITE_API_URL + backend CORS_EXTRA_ORIGINS.
+Next: plan.md Phase 4 — wire Gemini, Nemotron (backend/.env), confirm ElevenLabs; then Presage + deploy.
 
-Do not grep node_modules or backend/.venv. Keys live in backend/.env only (never commit).
+Do not grep frontend/node_modules or backend/.venv. Never commit .env files. Old Vite /diag page was not ported — use /interview for media; recover Diag from git only if debugging.
 ```
 
 ---
@@ -26,27 +28,31 @@ Do not grep node_modules or backend/.venv. Keys live in backend/.env only (never
 
 ```text
 backend/           FastAPI app — single process, in-memory session store
-  main.py          Routes, CORS, /turn orchestration (asyncio.gather)
+  main.py          Routes, CORS (incl. :3000), /turn orchestration
   interviewer.py   GEMINI seam — dialogue only → next_turn(history)
   judge.py         NEMOTRON seam — rubric only → score(answer)
-  director.py      NEMOTRON seam — session control → decide(scores, composure, history)
-  composure.py     PRESAGE seam → sample_composure(); to_composure(); speech fallback
+  director.py      NEMOTRON seam — session control → decide(...)
+  composure.py     PRESAGE seam → sample_composure(); mock default
   store.py         In-process list save/load (later: Tiger Data)
   .env             Secrets (gitignored); see .env.example
 
-frontend/          Vite + React 19, no react-router (pathname switch in main.tsx)
-  src/App.tsx      Interview loop: GET /session, POST /turn
-  src/Report.tsx   GET /session → composure canvas + rubric list (/report)
-  src/Diag.tsx     Mic + webcam + TTS coexistence test (/diag)
-  src/speechRecognition.ts  Web Speech API types/helpers
-  .env             VITE_API_URL (default http://localhost:8000)
+frontend/          Next.js 16 — sole UI package
+  app/interview/   Voice loop, MediaPipe badge, FastAPI /session + /turn
+  app/report/      GET /session → composure chart + rubrics
+  app/api/stt|tts  ElevenLabs proxy (server-side key)
+  lib/api.ts       getHealth, getSession, postTurn
+  lib/api-types.ts FastAPI JSON shapes (report + /turn client)
+  lib/contracts.ts Target Nemotron/composure types (UI debug only today)
+  .env.local       NEXT_PUBLIC_API_URL, ELEVENLABS_API_KEY (see .env.example)
 
 presage_smoke/     Official hello_vitals mirror + run_smoke.ps1 (step 5)
 docs/              presage-step5.md — smoke status, sidecar decision
 
-plan.md            Living build checklist + product notes (trimmed)
+plan.md            Build checklist + merge phases
 handoff.md         This file
 ```
+
+**Removed from tree:** `temp_ui_stuff/` (merged into `frontend/`), Vite `frontend/` (git history). No `app/diag` route.
 
 ---
 
@@ -58,7 +64,8 @@ handoff.md         This file
 | Judge | `judge.py` | No | Fixed rubric JSON |
 | Director | `director.py` | No | Always `follow_up` mock |
 | Composure | `composure.py` | N/A | Default `0.72` mock; sidecar/fallback wired but off |
-| Voice (future) | frontend or backend | TTS out | `/diag` uses browser SpeechSynthesis only |
+| Voice | `frontend/app/api/tts`, interview machine | TTS out | ElevenLabs route + browser `speechSynthesis` fallback |
+| STT | `frontend/app/api/stt` | N/A | ElevenLabs; empty/failed → user-visible error on interview page |
 
 Nemotron must **never** return user-facing dialogue. Gemini must **not** own rubric or director decisions.
 
@@ -73,6 +80,8 @@ Nemotron must **never** return user-facing dialogue. Gemini must **not** own rub
 | POST | `/turn` | Body `{ "answer": "..." }` → `{ scores, decision, next_question }`; appends store record |
 | GET | `/debug` | Runs all mock seams once; **clears and seeds** one turn in store |
 | GET | `/debug/presage` | Composure seam status (mock vs sidecar probe) |
+
+There is **no** backend `/diag`. The old Vite `/diag` was a frontend-only media harness (Web Speech + browser TTS); it is **not** required for the demo path.
 
 ### One turn (`POST /turn`) flow
 
@@ -99,36 +108,42 @@ Store record shape (for report / future DB):
 
 ---
 
-## Frontend routes
+## Frontend routes (Next.js)
 
-Routing is **pathname-based** in `main.tsx` (Vite SPA — deploy needs rewrite for `/report` and `/diag`).
+| URL | Page |
+|-----|------|
+| `/` | Landing |
+| `/interview` | Voice interview → FastAPI `/session`, `/turn`; **API ok** banner when backend reachable |
+| `/report` | Session report from `GET /session` |
 
-| URL | Component |
-|-----|-----------|
-| `/` | `App.tsx` — interview UI |
-| `/report` | `Report.tsx` — composure line chart + rubric list |
-| `/diag` | `Diag.tsx` — media diagnostic |
+Env:
 
-Env: `VITE_API_URL` → backend base (see `frontend/.env.example`).
-
----
-
-## Composure (`composure.py`)
-
-- **`COMPOSURE_MODE`**: `mock` (default) | `auto` | `sidecar` | `fallback` (see module + `docs/presage-step5.md`).
-- **`PRESAGE_SIDECAR_URL`**: default `http://127.0.0.1:8100/composure` (step 7 — **not implemented** as a running sidecar yet).
-- **`to_composure(raw)`**: maps sidecar JSON → single 0–1 scalar.
-- **`fallback_composure_from_speech(answer)`**: filler/latency heuristics when Presage is down.
-
-Browser should **not** call the sidecar; only the backend samples composure during `/turn`.
+- `NEXT_PUBLIC_API_URL` — FastAPI base (default `http://localhost:8000`)
+- `ELEVENLABS_API_KEY` — server-only for `/api/stt` and `/api/tts`
 
 ---
 
-## CORS and external frontend (v0 / Vercel)
+## Composure (two signals)
 
-Backend allows local Vite origins plus comma-separated **`CORS_EXTRA_ORIGINS`** in `backend/.env` (e.g. `https://your-app.vercel.app`).
+| Signal | Source | Used for |
+|--------|--------|----------|
+| Live badge / **Signal** panel on `/interview` | Browser MediaPipe | UX during call only |
+| Director + `/report` curve | `sample_composure()` in `POST /turn` | Session truth in `store` |
 
-External UI sets `VITE_API_URL` (or equivalent) to the deployed API URL.
+Backend module notes:
+
+- **`COMPOSURE_MODE`**: `mock` (default) | `auto` | `sidecar` | `fallback` — see `composure.py` and [docs/presage-step5.md](docs/presage-step5.md).
+- Browser should **not** call the Presage sidecar; only the backend samples during `/turn`.
+- When sidecar `:8100` owns the camera, disable browser webcam path — see presage doc.
+
+---
+
+## CORS and deploy
+
+- Local Next: `http://localhost:3000` and `http://127.0.0.1:3000` are in `main.py`.
+- Vite ports `5173–5175` remain listed for legacy; no Vite app in repo.
+- Production UI: set **`CORS_EXTRA_ORIGINS`** on the API (e.g. `https://….vercel.app`).
+- Vercel UI: `NEXT_PUBLIC_API_URL` + `ELEVENLABS_API_KEY` in project env.
 
 ---
 
@@ -142,13 +157,13 @@ uvicorn main:app --reload --port 8000
 
 # Terminal 2
 cd frontend
-npm install
-npm run dev
+pnpm install   # or: npx pnpm@12.3.4 install
+pnpm dev
 ```
 
-Open Vite URL (usually http://localhost:5173). Confirm **backend ok**, submit answers, then http://localhost:5173/report.
+Open http://localhost:3000 → **Start a mock interview** → join call (needs **API ok**) → speak → **End** or continue → `/report`.
 
-Presage smoke (optional, blocked until key + MSVC): `docs/presage-step5.md`.
+Presage smoke (optional): [docs/presage-step5.md](docs/presage-step5.md). Backend probe: `GET http://localhost:8000/debug/presage`.
 
 ---
 
@@ -156,30 +171,33 @@ Presage smoke (optional, blocked until key + MSVC): `docs/presage-step5.md`.
 
 | Step | Status |
 |------|--------|
-| 1 Health + CORS | Done |
+| 1 Health + CORS | Done (incl. Next :3000) |
 | 2 Mock seams + `/debug` | Done |
-| 3 `/turn` loop + UI | Done |
-| 4 `/diag` mic/webcam/TTS | Done |
+| 3 `/turn` loop + UI | Done (Next `/interview`) |
+| 4 Media mic/webcam/TTS | **Superseded** by interview + Signal panel; Vite `/diag` not ported |
 | 5 Presage smoke | **Postponed** — not verified on this machine |
-| 6 `/report` on mock data | Done |
+| 6 `/report` | Done (Next `/report`) |
 | 7 Presage sidecar `:8100` | **Not started** |
-| API keys (Gemini, Nemotron, ElevenLabs) | **Not wired** — mocks only |
-| v0/Vercel UI integration | **Not started** — env + CORS only prepared |
+| Merge M1–M3 (single frontend, wire API, CORS) | **Done** |
+| Phase 4 API keys (Gemini, Nemotron, ElevenLabs live) | **Not started** |
+| Phase 6 Deploy | **Not started** |
 
 ---
 
-## Integration guidelines (next work)
+## Integration guidelines (next work — Phase 4)
 
-1. **Gemini** — replace body of `interviewer.next_turn()` only; keep return type `{"role":"interviewer","text": str}`.
-2. **Nemotron judge** — replace `judge.score()`; preserve rubric keys used by director and UI.
-3. **Nemotron director** — replace `director.decide()`; `action` ∈ `press_harder | follow_up | move_on | curveball | ease_off`; log `input_snapshot` for eval.
-4. **ElevenLabs** — add alongside interviewer output (frontend playback or backend audio URL); keep `/turn` JSON stable initially.
-5. **Presage** — finish step 5 smoke, then step 7 sidecar; set `COMPOSURE_MODE=auto` without changing `/turn` contract.
-6. **Persistence** — replace `store.py` with Tiger Data when ready; report already consumes `/session`.
+1. **ElevenLabs** — `frontend/.env.local`; verify `/api/tts` and `/api/stt` on a full turn.
+2. **Gemini** — replace body of `interviewer.next_turn()` only; keep `{ role, text }`.
+3. **Nemotron judge** — replace `judge.score()`; preserve rubric keys for director + report UI.
+4. **Nemotron director** — replace `director.decide()`; keep `action` enum + `input_snapshot` for eval.
+5. **Presage** — step 5 smoke, then step 7 sidecar; `COMPOSURE_MODE=auto` without changing `/turn` contract.
+6. **Persistence** — replace `store.py` with Tiger Data when ready.
+
+Optional: port Vite `/diag` to `app/diag/page.tsx` only for isolated Web Speech vs TTS debugging (not on critical path).
 
 ---
 
 ## Git / secrets
 
-- Never commit `backend/.env`, `node_modules/`, `frontend/dist/`, `backend/.venv/`, `presage_smoke/.sdk/`.
-- `.gitignore` already covers these.
+- Never commit `backend/.env`, `frontend/.env.local`, `node_modules/`, `frontend/.next/`, `backend/.venv/`, `presage_smoke/.sdk/`.
+- Backend keys: `backend/.env`. ElevenLabs: `frontend/.env.local` only.

@@ -14,15 +14,17 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-### Frontend (port 5173)
+### Frontend (Next.js, port 3000)
 
 ```powershell
 cd frontend
-npm install
-npm run dev
+pnpm install   # or: npx pnpm@12.3.4 install
+pnpm dev       # or: npx pnpm@12.3.4 dev
 ```
 
-Open the URL Vite prints (usually http://localhost:5173, or **5174** if 5173 is already in use). You should see **backend ok** when the API is running.
+Copy `frontend/.env.example` to `frontend/.env.local` and set `ELEVENLABS_API_KEY` when using voice routes.
+
+Open http://localhost:3000 — join a call, answer via voice (or browser STT fallback messaging), then http://localhost:3000/report for composure + rubrics.
 
 ## Step 5 — Presage smoke test
 

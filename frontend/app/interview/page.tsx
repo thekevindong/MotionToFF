@@ -9,6 +9,7 @@ import { useMediaStream } from "@/hooks/use-media-stream"
 import { useComposureSampler } from "@/hooks/use-composure-sampler"
 import { useFaceComposure, type FaceMetrics } from "@/hooks/use-face-composure"
 import { useInterviewMachine } from "@/hooks/use-interview-machine"
+import { getHealth, getSession, postTurn } from "@/lib/api"
 
 const STATE_LABELS: Record<TurnState, string> = {
   IDLE: "Ready to join",
@@ -20,19 +21,16 @@ const STATE_LABELS: Record<TurnState, string> = {
 
 const INTERVIEWER_NAME = "Maya Chen"
 
-// Placeholder questions until Gemini drives the loop. Audio plumbing only.
-const PLACEHOLDER_QUESTIONS = [
-  "Tell me about a project you're proud of. What was your specific role?",
-  "What was the hardest technical decision you made, and why?",
-  "Walk me through a time something you shipped broke in production.",
-]
-
 export default function InterviewPage() {
   const sessionId = useMemo(() => `s_${Date.now().toString(36)}`, [])
-  const [questionIndex, setQuestionIndex] = useState(0)
+  const [turnCount, setTurnCount] = useState(0)
+  const [currentQuestionText, setCurrentQuestionText] = useState<string | null>(null)
   const [transcript, setTranscript] = useState("")
   const [transcribing, setTranscribing] = useState(false)
-  const questionId = `q_${String(questionIndex + 1).padStart(3, "0")}`
+  const [apiOk, setApiOk] = useState<boolean | null>(null)
+  const [apiError, setApiError] = useState<string | null>(null)
+  const [turnError, setTurnError] = useState<string | null>(null)
+  const questionId = `q_${String(turnCount + 1).padStart(3, "0")}`
 
   const { stream, status, error, request, stop } = useMediaStream()
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -43,13 +41,16 @@ export default function InterviewPage() {
       think()
       setTranscribing(true)
       setTranscript("")
+      setTurnError(null)
+      let text = ""
       try {
         const form = new FormData()
         form.append("audio", blob, "answer.webm")
         const res = await fetch("/api/stt", { method: "POST", body: form })
         if (res.ok) {
           const data = await res.json()
-          setTranscript(data.transcript || "(no speech detected)")
+          text = (data.transcript || "").trim()
+          setTranscript(text || "(no speech detected)")
         } else {
           setTranscript("(transcription unavailable)")
         }
@@ -58,13 +59,22 @@ export default function InterviewPage() {
       } finally {
         setTranscribing(false)
       }
-      // Next step (H3–5): the transcript + composure feed Nemotron, which drives
-      // Gemini. For now, advance placeholder questions so the loop is observable.
-      const next = questionIndex + 1
-      if (next >= PLACEHOLDER_QUESTIONS.length) {
-        finish()
-      } else {
-        setQuestionIndex(next)
+
+      if (!text) {
+        setTurnError("No speech detected — try again.")
+        listen()
+        return
+      }
+
+      try {
+        const data = await postTurn(text)
+        setTurnCount((n) => n + 1)
+        setCurrentQuestionText(data.next_question.text)
+        ask(data.next_question.text)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Submit failed"
+        setTurnError(message)
+        listen()
       }
     },
   })
@@ -98,23 +108,29 @@ export default function InterviewPage() {
     }
   }, [stream])
 
-  const currentQuestion = PLACEHOLDER_QUESTIONS[questionIndex]
+  const currentQuestion =
+    currentQuestionText ??
+    "Join the call when you're ready. Your interviewer will ask the first question out loud."
   const speaking = state === "ASKING"
 
   async function handleStart() {
     const media = await request()
     if (!media) return
     setTranscript("")
-    ask(PLACEHOLDER_QUESTIONS[0])
-  }
-
-  // When a new question index is set after THINKING, ask it out loud.
-  useEffect(() => {
-    if (questionIndex > 0 && state === "THINKING") {
-      ask(PLACEHOLDER_QUESTIONS[questionIndex])
+    setTurnError(null)
+    setApiError(null)
+    try {
+      await getHealth()
+      const session = await getSession()
+      setApiOk(true)
+      setCurrentQuestionText(session.current_question.text)
+      ask(session.current_question.text)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Backend unavailable"
+      setApiOk(false)
+      setApiError(message)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [questionIndex])
+  }
 
   function handleEnd() {
     finish()
@@ -123,15 +139,19 @@ export default function InterviewPage() {
 
   function handleReset() {
     reset()
-    setQuestionIndex(0)
+    setTurnCount(0)
+    setCurrentQuestionText(null)
     setTranscript("")
+    setTurnError(null)
+    setApiError(null)
+    setApiOk(null)
   }
 
   const caption =
     state === "IDLE"
       ? "Join the call when you're ready. Your interviewer will ask the first question out loud."
       : state === "REPORT"
-        ? "The call has ended. Your report will render here."
+        ? "The call has ended. View your session report or start over."
         : currentQuestion
 
   return (
@@ -146,9 +166,17 @@ export default function InterviewPage() {
           Leave
         </Link>
         <div className="flex items-center gap-3">
-          {sessionActive && (
+          {apiOk === true && (
+            <span className="text-xs text-emerald-400">API ok</span>
+          )}
+          {apiOk === false && (
+            <span className="text-xs text-rose-400" title={apiError ?? undefined}>
+              API offline
+            </span>
+          )}
+          {sessionActive && turnCount > 0 && (
             <span className="text-xs text-neutral-500">
-              Question {questionIndex + 1} of {PLACEHOLDER_QUESTIONS.length}
+              {turnCount} turn{turnCount === 1 ? "" : "s"} completed
             </span>
           )}
           <button
@@ -248,6 +276,14 @@ export default function InterviewPage() {
         </div>
       </div>
 
+      {(apiError || turnError) && (
+        <div className="px-4 pb-2 sm:px-6">
+          <div className="mx-auto max-w-3xl rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-100">
+            {apiError ?? turnError}
+          </div>
+        </div>
+      )}
+
       {/* Transcript strip */}
       {(transcribing || transcript) && (
         <div className="px-4 pb-2 sm:px-6">
@@ -310,13 +346,21 @@ export default function InterviewPage() {
         )}
 
         {state === "REPORT" && (
-          <button
-            type="button"
-            onClick={handleReset}
-            className="inline-flex items-center gap-2 rounded-full bg-white px-7 py-3 text-sm font-semibold text-neutral-950 transition-opacity hover:opacity-90"
-          >
-            Start over
-          </button>
+          <>
+            <Link
+              href="/report"
+              className="inline-flex items-center gap-2 rounded-full bg-emerald-500 px-7 py-3 text-sm font-semibold text-neutral-950 transition-colors hover:bg-emerald-400"
+            >
+              View report
+            </Link>
+            <button
+              type="button"
+              onClick={handleReset}
+              className="inline-flex items-center gap-2 rounded-full border border-neutral-600 px-7 py-3 text-sm font-semibold text-neutral-100 transition-opacity hover:opacity-90"
+            >
+              Start over
+            </button>
+          </>
         )}
 
         {sessionActive && (

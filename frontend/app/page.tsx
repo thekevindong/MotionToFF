@@ -51,6 +51,12 @@ export default function Page() {
               <ArrowRight className="size-4" />
             </Link>
             <span className="text-xs text-muted-foreground">Needs camera + microphone access</span>
+            <Link
+              href="/report"
+              className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              Session report
+            </Link>
           </div>
         </section>
 
