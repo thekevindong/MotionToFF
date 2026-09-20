@@ -13,6 +13,27 @@ from typing import Any
 MOCK_COMPOSURE = 0.72
 SIDECAR_URL = os.getenv("PRESAGE_SIDECAR_URL", "http://127.0.0.1:8100/composure")
 
+
+def presage_configured() -> bool:
+    """True when a Presage / SmartSpectra API key is present in the environment."""
+    return bool(
+        os.getenv("PRESAGE_API_KEY", "").strip()
+        or os.getenv("SMARTSPECTRA_API_KEY", "").strip()
+    )
+
+
+def _effective_composure_mode() -> str:
+    """
+    Explicit COMPOSURE_MODE wins. With Presage keys and no explicit mode, use auto
+    (sidecar then speech fallback). Without keys, default mock — same pattern as Gemini.
+    """
+    explicit = os.getenv("COMPOSURE_MODE", "").strip().lower()
+    if explicit:
+        return explicit
+    if presage_configured():
+        return "auto"
+    return "mock"
+
 FILLER_PATTERN = re.compile(
     r"\b(um+|uh+|erm|like|you know|sort of|kind of)\b",
     re.IGNORECASE,
@@ -100,7 +121,7 @@ def _fetch_sidecar_composure() -> float:
 
 def sample_composure(answer: str = "") -> float:
     """Return a 0–1 composure scalar for the current turn."""
-    mode = os.getenv("COMPOSURE_MODE", "mock").strip().lower()
+    mode = _effective_composure_mode()
 
     if mode == "mock":
         return MOCK_COMPOSURE
@@ -125,7 +146,8 @@ def sample_composure(answer: str = "") -> float:
 
 def composure_seam_status(answer: str = "") -> dict[str, Any]:
     """Diagnostics for step 5 / presage integration."""
-    mode = os.getenv("COMPOSURE_MODE", "mock").strip().lower()
+    mode = _effective_composure_mode()
+    explicit_mode = os.getenv("COMPOSURE_MODE", "").strip().lower() or None
     sidecar_reachable = False
     sidecar_error: str | None = None
     sidecar_raw: dict[str, Any] | None = None
@@ -143,7 +165,9 @@ def composure_seam_status(answer: str = "") -> dict[str, Any]:
 
     return {
         "composure_mode": mode,
-        "spine_uses_mock_by_default": mode == "mock",
+        "composure_mode_explicit": explicit_mode,
+        "presage_key_configured": presage_configured(),
+        "spine_uses_mock_by_default": mode == "mock" and not presage_configured(),
         "mock_value": MOCK_COMPOSURE,
         "sample_composure_output": sample_composure(answer),
         "fallback_preview": fallback_composure_from_speech(answer or "Um, I guess I led the migration."),

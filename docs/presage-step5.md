@@ -1,60 +1,77 @@
-# Step 5 — Presage smoke test (time-boxed)
-
-## Goal
-
-Run the official SmartSpectra **hello vitals** sample on the demo machine and get **one** cardio or breathing metric line printed. Decide how `sample_composure()` will integrate later while keeping the **mock** as the default so `/turn` stays green.
-
-## Official reference
-
-- Windows quickstart: [SmartSpectra `cpp/docs/windows/index.md`](https://github.com/Presage-Security/SmartSpectra/blob/main/cpp/docs/windows/index.md)
-- SDK release (Windows x64 ZIP): [v3.3.0 `smartspectra-sdk-3.3.0-windows-x64.zip`](https://github.com/Presage-Security/SmartSpectra/releases/download/v3.3.0/smartspectra-sdk-3.3.0-windows-x64.zip)
-- API key: [physiology.presagetech.com](https://physiology.presagetech.com/auth/login)
-
-This repo mirrors the quickstart under `presage_smoke/` (`hello_vitals.cpp`, `CMakeLists.txt`).
-
-## How to run
-
-1. Add `PRESAGE_API_KEY=...` (or `SMARTSPECTRA_API_KEY`) to `backend/.env`.
-2. Install **Visual Studio 2022** (or Build Tools) with **Desktop development with C++** and **CMake tools for Windows**.
-3. From an **x64 Native Tools** prompt (or use the script, which locates `VsDevCmd.bat`):
-
-```powershell
-cd presage_smoke
-.\run_smoke.ps1 -DownloadSdk
-```
-
-Success = log contains `Cardio metrics:` or `Breathing metrics:` (see upstream docs).
-
-## Smoke attempt on this dev machine (2026-09-19)
-
-| Check | Result |
-| ----- | ------ |
-| `PRESAGE_API_KEY` in `backend/.env` | Not set |
-| `SMARTSPECTRA_SDK_PATH` / `C:\SmartSpectra` | Not present |
-| `cmake` / MSVC `cl` on PATH | Not found |
-| Vitals line printed | **No** (blocked before build) |
-
-**Hard-stop decision:** treat Presage as **unverified** for now. The interview spine keeps using the **mock** composure scalar (`0.72`). Speech-derived fallback is implemented behind the same module and exposed on `GET /debug/presage` for manual checks.
-
-## Sidecar vs REST (integration choice for step 7)
-
-| Approach | Pros | Cons |
-| -------- | ---- | ---- |
-| **REST-only from Python** | Fewer moving parts | No first-class Python SDK in the hackathon bundle; still need native runtime for camera on Windows |
-| **Sidecar (recommended)** | Webcam owned by one process; main API stays Python; crash isolation on `:8100`; matches plan.md step 7 | Requires C++ hello_vitals → JSON stdout → thin FastAPI sidecar |
-
-**Chosen path:** **sidecar on `localhost:8100`** (`GET /composure`, `GET /health`). The C++ sample already uses continuous camera + REST API key; the sidecar wraps that binary and the backend pulls the latest sample.
-
-`sample_composure()` (step 7, not enabled by default):
-
-```text
-COMPOSURE_MODE=auto  →  GET http://localhost:8100/composure  →  to_composure(json)
-                      →  on failure: fallback_composure_from_speech(...)
-COMPOSURE_MODE=mock   →  fixed 0.72 (current default for the spine)
-```
-
-The browser **does not** call the sidecar; it only talks to the main backend (per plan.md).
-
-## Camera conflict note
-
-`/diag` opens the webcam in the browser. When the Presage sidecar is running, **do not** also open the camera in the browser — use the composure gauge from the backend instead.
+# Step 5 — Presage smoke test (time-boxed)
+
+## Goal
+
+On a **Windows** demo machine, build and run the official SmartSpectra **hello vitals** sample and get **one** `Cardio metrics:` or `Breathing metrics:` line in the log. Until that passes, treat camera vitals as unproven; the app still demos via mock composure (no key) or **speech fallback** (Presage key set, no sidecar).
+
+## Official reference
+
+- Windows quickstart: [SmartSpectra `cpp/docs/windows/index.md`](https://github.com/Presage-Security/SmartSpectra/blob/main/cpp/docs/windows/index.md)
+- SDK (Windows x64 ZIP): [v3.3.0 release](https://github.com/Presage-Security/SmartSpectra/releases/download/v3.3.0/smartspectra-sdk-3.3.0-windows-x64.zip)
+- API key: [physiology.presagetech.com](https://physiology.presagetech.com/auth/login)
+
+This repo mirrors the quickstart under `presage_smoke/` (`hello_vitals.cpp`, `CMakeLists.txt`, `run_smoke.ps1`).
+
+## How to run
+
+1. Add `PRESAGE_API_KEY=...` (or `SMARTSPECTRA_API_KEY`) to `backend/.env`.  
+   Use **`PRESAGE_API_KEY`** — `PRESALE_API_KEY` is a common typo and will not load.
+2. Install **Visual Studio 2022** (or Build Tools) with **Desktop development with C++** and **CMake tools for Windows**.
+3. MSVC **v143 14.38+** is required for SDK 3.3.0 (older toolsets fail at link). Update via Visual Studio Installer → modify C++ workload.
+4. Optional: set `SMARTSPECTRA_SDK_PATH` if the SDK is not under `presage_smoke/.sdk/extracted`.
+
+```powershell
+cd presage_smoke
+.\run_smoke.ps1 -DownloadSdk
+```
+
+- **Success:** `smoke_last_run.log` (or console) contains `Cardio metrics:` or `Breathing metrics:`.
+- **Build only:** `.\run_smoke.ps1 -DownloadSdk -BuildOnly`
+- Logs and SDK live under `presage_smoke/` and are **gitignored** (`build/`, `.sdk/`, `smoke_*.txt`, `smoke_last_run.log`).
+
+The script reads the API key from `backend/.env` or the environment, locates VS `VsDevCmd.bat` / CMake under standard `Program Files` paths, and temporarily removes MinGW from `PATH` so CMake uses `cl`, not `g++`.
+
+## Record your smoke run (fill in when tested)
+
+| Check | Result |
+| ----- | ------ |
+| Date / machine | _e.g. 2026-09-20, laptop name_ |
+| `PRESAGE_API_KEY` in `backend/.env` | _Set / missing_ |
+| SDK extracted (`run_smoke.ps1 -DownloadSdk`) | _Yes / no_ |
+| VS 2022 + CMake | _Yes / no_ |
+| MSVC toolset version | _need **14.38+**_ |
+| `hello_vitals.exe` built | _Yes / link failed_ |
+| Vitals line printed (webcam) | _Yes / no_ |
+
+**Team default until smoke passes:** backend composure = **mock `0.72`** without a Presage key; with key and no sidecar = **`auto`** → speech fallback. **Do not build the Phase 7 sidecar** until smoke succeeds on at least one Windows box.
+
+Re-run after fixing MSVC or SDK:
+
+```powershell
+cd presage_smoke
+.\run_smoke.ps1 -DownloadSdk
+```
+
+Backend probe (no camera): `GET http://localhost:8000/debug/presage` — shows mode, sidecar reachability, whether a key is configured.
+
+## Step 7 integration (after smoke passes)
+
+| Approach | Pros | Cons |
+| -------- | ---- | ---- |
+| **REST-only from Python** | Fewer processes | No bundled Python SDK; camera still needs native code on Windows |
+| **Sidecar (recommended)** | One camera owner; Python API unchanged; isolate crashes on `:8100` | Wrap `hello_vitals` → HTTP (`GET /health`, `GET /composure`) |
+
+**Planned path:** sidecar on **`127.0.0.1:8100`** (override with `PRESAGE_SIDECAR_URL` on the main API). Backend `composure.py` already probes that URL when mode is `auto` or `sidecar`.
+
+```text
+No Presage key     →  mock 0.72
+Key + COMPOSURE_MODE unset  →  auto: sidecar GET /composure → else speech fallback
+COMPOSURE_MODE=mock|sidecar|fallback  →  explicit override
+```
+
+The browser **does not** call the sidecar; only the main backend samples during `POST /turn`.
+
+## Camera conflict
+
+`/interview` uses the **browser webcam** (MediaPipe badge — UX only). When the Presage sidecar owns the camera, **do not** run both on the same device: disable or hide the interview self-view, or run sidecar on the machine that presents while judges use a read-only UI. **Report composure** always comes from the backend turn store, not MediaPipe.
+

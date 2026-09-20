@@ -1,18 +1,22 @@
-"""In-process session store (later: Tiger Data / hypertable)."""
+"""Backward-compatible shim — persisted data lives in repository.py (SQLite)."""
 
 from typing import Any
 
-_records: list[dict[str, Any]] = []
+from repository import append_turn, clear_session, get_or_create_legacy_session, get_turns, init_db
+
+
+def _default_session_id() -> str:
+    init_db()
+    return get_or_create_legacy_session()
 
 
 def save(record: dict[str, Any]) -> None:
-    _records.append(record)
+    append_turn(_default_session_id(), record)
 
 
 def load() -> list[dict[str, Any]]:
-    return list(_records)
+    return get_turns(_default_session_id())
 
 
 def clear() -> None:
-    """Reset store — useful for tests and /debug."""
-    _records.clear()
+    clear_session(_default_session_id())

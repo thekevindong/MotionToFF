@@ -28,6 +28,42 @@ Ask exactly ONE clear spoken question per turn — no preamble, scoring, or feed
 Stay concise (one or two sentences). Do not repeat a question already asked in the transcript.
 If the conversation is empty, open with a strong first interview question."""
 
+CONTEXT_MAX_CHARS = 8000
+
+
+def build_interviewer_context(session_id: str | None) -> str:
+    """Load job title + document text for Gemini grounding (truncated)."""
+    if not session_id:
+        return ""
+    from repository import get_documents_for_context, get_session_row
+
+    row = get_session_row(session_id)
+    if not row:
+        return ""
+
+    parts: list[str] = []
+    job_title = (row.get("job_title") or "").strip()
+    if job_title:
+        parts.append(f"Target role / job title: {job_title}")
+
+    for filename, text in get_documents_for_context(session_id):
+        snippet = (text or "").strip()
+        if not snippet:
+            continue
+        parts.append(f"--- {filename} ---\n{snippet}")
+
+    if not parts:
+        return ""
+
+    block = "\n\n".join(parts)
+    if len(block) > CONTEXT_MAX_CHARS:
+        block = block[: CONTEXT_MAX_CHARS - 3].rstrip() + "..."
+    return (
+        "Use the candidate background below to ask relevant, specific interview questions. "
+        "Reference their experience when natural; do not read the documents aloud.\n\n"
+        + block
+    )
+
 
 def _mock_next_turn(history: History) -> dict[str, str]:
     turn_index = sum(1 for entry in history if entry.get("role") == "interviewer")
@@ -62,9 +98,16 @@ def _extract_question_text(payload: dict[str, Any]) -> str:
     return text
 
 
-def _gemini_next_turn(history: History, api_key: str) -> dict[str, str]:
+def _gemini_next_turn(
+    history: History, api_key: str, session_id: str | None = None
+) -> dict[str, str]:
     model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
     url = f"{GEMINI_API_BASE}/models/{model}:generateContent?key={api_key}"
+
+    context = build_interviewer_context(session_id)
+    system_text = SYSTEM_INSTRUCTION
+    if context:
+        system_text = f"{SYSTEM_INSTRUCTION}\n\n{context}"
 
     contents = _history_to_contents(history)
     if not contents:
@@ -83,7 +126,7 @@ def _gemini_next_turn(history: History, api_key: str) -> dict[str, str]:
         ]
 
     body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+        "systemInstruction": {"parts": [{"text": system_text}]},
         "contents": contents,
         "generationConfig": {
             "temperature": 0.75,
@@ -111,14 +154,14 @@ def _gemini_next_turn(history: History, api_key: str) -> dict[str, str]:
     return {"role": "interviewer", "text": question}
 
 
-def next_turn(history: History) -> dict[str, str]:
+def next_turn(history: History, session_id: str | None = None) -> dict[str, str]:
     """Return the next interviewer line ({ role, text }). Uses Gemini when keyed."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         return _mock_next_turn(history)
 
     try:
-        return _gemini_next_turn(history, api_key)
+        return _gemini_next_turn(history, api_key, session_id=session_id)
     except Exception as exc:  # noqa: BLE001 — keep /turn green; log for debugging
         logger.warning("Gemini interviewer failed, using mock: %s", exc)
         return _mock_next_turn(history)

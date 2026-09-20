@@ -10,3 +10,4 @@ presage_smoke/.sdk/
 presage_smoke/build/
 presage_smoke/smoke_*.txt
 presage_smoke/smoke_last_run.log
+backend/data/
