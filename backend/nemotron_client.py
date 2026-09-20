@@ -45,6 +45,9 @@ def _extract_message_text(payload: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str) and content.strip():
         return content.strip()
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning.strip()
     if isinstance(content, list):
         parts = []
         for block in content:
@@ -64,14 +67,17 @@ def _strip_reasoning_preamble(text: str) -> str:
     return stripped
 
 
+def _json_start_indices(text: str) -> list[int]:
+    """Prefer later `{` first — reasoning models often append JSON at the end."""
+    return [i for i in range(len(text) - 1, -1, -1) if text[i] == "{"]
+
+
 def parse_json_object(text: str) -> dict[str, Any]:
     """Parse a JSON object from model output (fences, preamble, or trailing CoT)."""
     stripped = _strip_reasoning_preamble(text)
 
     decoder = json.JSONDecoder()
-    for index, char in enumerate(stripped):
-        if char != "{":
-            continue
+    for index in _json_start_indices(stripped):
         try:
             obj, _ = decoder.raw_decode(stripped[index:])
         except json.JSONDecodeError:
@@ -83,9 +89,43 @@ def parse_json_object(text: str) -> dict[str, Any]:
 
 
 _JSON_RETRY_USER = (
+    "/no_think\n"
     "Output ONLY one JSON object. First character must be {. "
     "No markdown, no preamble, no chain-of-thought, no analysis."
 )
+
+_NO_THINK_SYSTEM = "/no_think"
+
+
+def _thinking_disabled() -> bool:
+    mode = os.getenv("NEMOTRON_DISABLE_THINKING", "true").strip().lower()
+    return mode not in ("off", "false", "0", "none")
+
+
+def _messages_for_json(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Reasoning Nemotron models need /no_think or enable_thinking=false for JSON-only tasks."""
+    if not _thinking_disabled():
+        return messages
+    out: list[dict[str, str]] = []
+    injected = False
+    for msg in messages:
+        if not injected and msg.get("role") == "system":
+            content = str(msg.get("content", "")).strip()
+            if "/no_think" not in content and "/think" not in content:
+                content = f"{_NO_THINK_SYSTEM}\n\n{content}" if content else _NO_THINK_SYSTEM
+            out.append({**msg, "content": content})
+            injected = True
+        else:
+            out.append(msg)
+    if not injected:
+        out.insert(0, {"role": "system", "content": _NO_THINK_SYSTEM})
+    return out
+
+
+def _extra_request_fields() -> dict[str, Any]:
+    if not _thinking_disabled():
+        return {}
+    return {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def chat_completion(
@@ -102,9 +142,10 @@ def chat_completion(
     url = f"{_api_base()}/chat/completions"
     body: dict[str, Any] = {
         "model": _model(),
-        "messages": messages,
+        "messages": _messages_for_json(messages),
         "temperature": temperature,
         "max_tokens": max_tokens,
+        **_extra_request_fields(),
     }
     if response_format is not None:
         body["response_format"] = response_format
@@ -124,7 +165,18 @@ def chat_completion(
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Nemotron HTTP {exc.code}: {detail}") from exc
+        if exc.code == 400 and "chat_template_kwargs" in body:
+            slim = {k: v for k, v in body.items() if k != "chat_template_kwargs"}
+            request = urllib.request.Request(
+                url,
+                data=json.dumps(slim).encode("utf-8"),
+                headers=request.headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        else:
+            raise RuntimeError(f"Nemotron HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Nemotron request failed: {exc.reason}") from exc
 

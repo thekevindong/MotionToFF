@@ -4,6 +4,7 @@ const PREP_DEFAULTS_KEY = 'speakup_prep_defaults'
 export type PrepDefaults = {
   modeId: string
   characterId: string
+  sessionDurationSec?: number
 }
 
 export function readPrepDefaults(): Partial<PrepDefaults> {

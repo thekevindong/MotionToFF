@@ -2,6 +2,10 @@ import { useState } from 'react'
 
 import { ContextPanel } from '../components/ContextPanel'
 import { MODES, SALARY_CHARACTERS, type Character, type Mode } from '../config/modes'
+import {
+  SESSION_DURATION_OPTIONS,
+  formatSessionDuration,
+} from '../config/session-duration'
 
 export type PrepStep = 'scenario' | 'opponent' | 'context' | 'ready'
 
@@ -30,6 +34,8 @@ export function StudioPrep({
   entering,
   enterError,
   onEnterStudio,
+  sessionDurationSec,
+  onSessionDurationChange,
 }: {
   modeId: string | null
   charId: string | null
@@ -41,6 +47,8 @@ export function StudioPrep({
   onAddContextFiles: (picked: FileList | null) => void
   onRemoveContextFile: (index: number) => void
   contextError: string | null
+  sessionDurationSec: number
+  onSessionDurationChange: (seconds: number) => void
   entering: boolean
   enterError: string | null
   onEnterStudio: () => void
@@ -208,6 +216,26 @@ export function StudioPrep({
             onAddFiles={onAddContextFiles}
             onRemoveFile={onRemoveContextFile}
           />
+          <div className="prep-duration-block">
+            <h2 className="prep-duration-title">How long is this session?</h2>
+            <p className="prep-duration-sub">
+              When time is up, you will be taken to your report automatically.
+            </p>
+            <div className="duration-grid" role="listbox" aria-label="Session length">
+              {SESSION_DURATION_OPTIONS.map((opt) => (
+                <button
+                  key={opt.seconds}
+                  type="button"
+                  role="option"
+                  aria-selected={sessionDurationSec === opt.seconds}
+                  className={`duration-chip ${sessionDurationSec === opt.seconds ? 'is-selected' : ''}`}
+                  onClick={() => onSessionDurationChange(opt.seconds)}
+                >
+                  {opt.shortLabel}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="prep-panel-cta">
             <button type="button" className="prep-btn prep-btn--ghost" onClick={goBack}>
               Back
@@ -258,6 +286,10 @@ export function StudioPrep({
                     ? `${pendingContextFiles.length} document${pendingContextFiles.length === 1 ? '' : 's'}`
                     : 'Default job framing'}
               </span>
+            </div>
+            <div className="prep-summary-row">
+              <span className="prep-summary-label">Length</span>
+              <span className="prep-summary-value">{formatSessionDuration(sessionDurationSec)}</span>
             </div>
           </div>
           <div className="prep-enter">

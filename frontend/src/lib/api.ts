@@ -3,6 +3,8 @@ import type {
   HealthResponse,
   InterjectRequest,
   InterjectResponse,
+  SessionCloseRequest,
+  SessionCloseResponse,
   SessionVitalsResponse,
   SessionResponse,
   TurnResponse,
@@ -47,6 +49,7 @@ export async function createSession(input?: CreateSessionInput): Promise<CreateS
   const jobTitle = input?.jobTitle?.trim()
   const scenarioId = input?.scenarioId?.trim()
   const characterId = input?.characterId?.trim()
+  const sessionDurationSec = input?.sessionDurationSec
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -54,6 +57,10 @@ export async function createSession(input?: CreateSessionInput): Promise<CreateS
       job_title: jobTitle || null,
       scenario_id: scenarioId || null,
       character_id: characterId || null,
+      session_duration_sec:
+        typeof sessionDurationSec === 'number' && sessionDurationSec > 0
+          ? sessionDurationSec
+          : null,
     }),
   })
   if (!res.ok) {
@@ -81,6 +88,15 @@ export async function uploadDocument(
 export async function getSession(sessionId?: string): Promise<SessionResponse> {
   const path = sessionId ? `/sessions/${sessionId}` : '/session'
   const res = await fetch(`${API_BASE}${path}`)
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+/** Loads session + end-of-session Nemotron rubric (merged into turn scores). */
+export async function getSessionReport(sessionId: string): Promise<SessionResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/report`)
   if (!res.ok) {
     throw new Error(await parseError(res))
   }
@@ -116,6 +132,24 @@ export async function postInterject(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function postSessionClose(
+  sessionId: string,
+  body: SessionCloseRequest = {},
+): Promise<SessionCloseResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/close`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      elapsed_sec: body.elapsedSec,
+      duration_sec: body.durationSec,
+    }),
   })
   if (!res.ok) {
     throw new Error(await parseError(res))

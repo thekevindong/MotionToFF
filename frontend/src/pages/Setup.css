@@ -204,6 +204,10 @@
 .studio-timer[data-live='true'] {
   color: var(--ink);
 }
+.studio-timer[data-low='true'] {
+  color: #b45309;
+  border-color: color-mix(in srgb, #b45309 40%, var(--sand-line));
+}
 .studio-timer[data-live='true']::before {
   content: '';
   width: 7px;
@@ -1335,6 +1339,49 @@
 }
 .context-panel .context-caption {
   margin-top: 0;
+}
+.prep-duration-block {
+  margin-top: 28px;
+  padding-top: 8px;
+}
+.prep-duration-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.prep-duration-sub {
+  margin: 0 0 14px;
+  font-size: 0.88rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.duration-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.duration-chip {
+  min-width: 4.5rem;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--sand-line-strong);
+  background: var(--paper);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.duration-chip:hover {
+  border-color: var(--ink-muted, #555);
+}
+.duration-chip.is-selected {
+  border-color: var(--accent, #c45a28);
+  background: color-mix(in srgb, var(--accent, #c45a28) 12%, var(--paper));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #c45a28) 35%, transparent);
 }
 .prep-summary {
   text-align: left;

@@ -385,6 +385,111 @@ def _gemini_interjection(
     return _extract_interaction_text(payload)
 
 
+MOCK_SESSION_CLOSINGS = [
+    "That's our time for today — thank you for walking through this with me. Great effort; we'll wrap here.",
+    "We've hit the end of our slot. I appreciate the practice — let's call it here and you can review your report.",
+    "Time's up on this session. Thanks for your answers today — we'll stop here.",
+]
+
+CLOSING_SYSTEM = """You are the interviewer in a live practice session (salary negotiation or mock interview).
+The scheduled session time has ended.
+
+Deliver a warm, in-character closing in 2–3 sentences (under 45 words).
+Thank the candidate, acknowledge their effort, and clearly end the interview.
+Do NOT ask another question. Do NOT give scores or rubric feedback. No bullet points."""
+
+
+def _mock_session_closing(session_id: str | None) -> str:
+    from repository import get_turns
+
+    turns = get_turns(session_id) if session_id else []
+    idx = len(turns) % len(MOCK_SESSION_CLOSINGS)
+    return MOCK_SESSION_CLOSINGS[idx]
+
+
+def _gemini_session_closing(
+    session_id: str | None,
+    api_key: str,
+    *,
+    elapsed_sec: int | None,
+    duration_sec: int | None,
+    turn_count: int,
+) -> str:
+    model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    persona = _persona_instruction(session_id)
+    tail = _transcript_summary(_history_from_session(session_id), max_turns=8)
+    timing = (
+        f"Elapsed: {elapsed_sec}s of {duration_sec}s scheduled."
+        if elapsed_sec is not None and duration_sec is not None
+        else "Scheduled session time has ended."
+    )
+    body: dict[str, Any] = {
+        "model": model,
+        "system_instruction": f"{persona}\n\n{CLOSING_SYSTEM}",
+        "input": (
+            f"{timing}\nTurns completed: {turn_count}.\n\n"
+            f"Recent transcript:\n{tail}\n\n"
+            "Speak your closing line now."
+        ),
+        "generation_config": {
+            "max_output_tokens": 160,
+            "thinking_level": "minimal",
+        },
+    }
+    payload = _create_interaction(body, api_key)
+    return _extract_interaction_text(payload)
+
+
+def _history_from_session(session_id: str | None) -> History:
+    if not session_id:
+        return []
+    from repository import get_turns
+
+    history: History = []
+    for row in get_turns(session_id):
+        history.append({"role": "interviewer", "text": row.get("question", "")})
+        history.append({"role": "candidate", "text": row.get("answer", "")})
+    return history
+
+
+def _transcript_summary(history: History, max_turns: int = 8) -> str:
+    lines: list[str] = []
+    for entry in history[-max_turns * 2 :]:
+        role = entry.get("role")
+        text = str(entry.get("text", "")).strip()
+        if not text:
+            continue
+        label = "Interviewer" if role == "interviewer" else "Candidate"
+        lines.append(f"{label}: {text[:400]}")
+    return "\n".join(lines) if lines else "(no prior transcript)"
+
+
+def generate_session_closing(
+    session_id: str | None,
+    *,
+    elapsed_sec: int | None = None,
+    duration_sec: int | None = None,
+) -> dict[str, Any]:
+    """In-character wrap-up when the session timer ends."""
+    turn_count = len(_history_from_session(session_id)) // 2
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return {"text": _mock_session_closing(session_id)}
+
+    try:
+        text = _gemini_session_closing(
+            session_id,
+            api_key,
+            elapsed_sec=elapsed_sec,
+            duration_sec=duration_sec,
+            turn_count=turn_count,
+        )
+        return {"text": text}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Gemini session closing failed, using mock: %s", exc)
+        return {"text": _mock_session_closing(session_id)}
+
+
 def generate_interjection(
     session_id: str | None,
     trigger: str,

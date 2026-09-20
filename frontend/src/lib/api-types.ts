@@ -41,6 +41,7 @@ export type SessionDocument = {
 export type SessionPersonaSettings = {
   scenario_id?: string
   character_id?: string
+  session_duration_sec?: number
 }
 
 export type SessionResponse = {
@@ -62,6 +63,7 @@ export type CreateSessionInput = {
   jobTitle?: string
   scenarioId?: string
   characterId?: string
+  sessionDurationSec?: number
 }
 
 export type UploadDocumentResponse = {
@@ -94,6 +96,15 @@ export type InterjectRequest = {
 export type InterjectResponse = {
   text: string
   resume: boolean
+}
+
+export type SessionCloseRequest = {
+  elapsedSec?: number
+  durationSec?: number
+}
+
+export type SessionCloseResponse = {
+  text: string
 }
 
 export type SessionVitalsResponse = {

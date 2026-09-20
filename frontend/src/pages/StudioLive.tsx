@@ -243,8 +243,10 @@ export type StudioLiveProps = {
   mode: Mode
   character: Character
   sessionLive: boolean
+  sessionClosing?: boolean
   started: boolean
   seconds: number
+  sessionDurationSec: number
   state: TurnState
   statsOpen: boolean
   onToggleStats: () => void
@@ -278,8 +280,10 @@ export function StudioLive({
   mode,
   character,
   sessionLive,
+  sessionClosing = false,
   started,
   seconds,
+  sessionDurationSec,
   state,
   statsOpen,
   onToggleStats,
@@ -320,12 +324,20 @@ export function StudioLive({
         </div>
         <div className="studio-top-right">
           {sessionLive && (
-            <span className="studio-state-pill" data-state={state}>
-              {STATE_LABELS[state]}
+            <span className="studio-state-pill" data-state={sessionClosing ? 'REPORT' : state}>
+              {sessionClosing ? 'Wrapping up…' : STATE_LABELS[state]}
             </span>
           )}
-          <span className="studio-timer" data-live={started}>
-            {started ? fmt(seconds) : 'Ready'}
+          <span
+            className="studio-timer"
+            data-live={started}
+            data-low={started && sessionDurationSec > 0 && sessionDurationSec - seconds <= 30}
+          >
+            {started
+              ? sessionDurationSec > 0
+                ? `${fmt(seconds)} / ${fmt(sessionDurationSec)}`
+                : fmt(seconds)
+              : 'Ready'}
           </span>
         </div>
       </header>

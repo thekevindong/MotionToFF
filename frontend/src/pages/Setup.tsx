@@ -6,6 +6,10 @@ import { interjectDevMode } from '../config/composure-thresholds'
 import type { CharacterId } from '../config/character-expressions'
 import type { TurnState } from '../lib/contracts'
 import { MODES, SALARY_CHARACTERS, type Character, type Mode } from '../config/modes'
+import {
+  DEFAULT_SESSION_DURATION_SEC,
+  isAllowedSessionDuration,
+} from '../config/session-duration'
 import { useBrowserSpeechCapture } from '../hooks/use-browser-speech-capture'
 import { useComposureReactions, useInterjectDevShortcut } from '../hooks/use-composure-reactions'
 import { useComposureSampler } from '../hooks/use-composure-sampler'
@@ -16,7 +20,15 @@ import { useVoiceActivity } from '../hooks/use-voice-activity'
 import { useMediaStream } from '../hooks/use-media-stream'
 import { usePresageVitals } from '../hooks/use-presage-vitals'
 import { presageStatusLabel, usePresageMetrics } from '../hooks/use-presage-metrics'
-import { createSession, getHealth, getSession, getVoiceStatus, postTurn, uploadDocument } from '../lib/api'
+import {
+  createSession,
+  getHealth,
+  getSession,
+  getVoiceStatus,
+  postSessionClose,
+  postTurn,
+  uploadDocument,
+} from '../lib/api'
 import {
   clearPrepComplete,
   isLiveStudioPath,
@@ -34,6 +46,12 @@ import './Setup.css'
 
 const CONTEXT_FILE_EXT = new Set(['.pdf', '.docx', '.txt'])
 
+function initialSessionDurationSec(): number {
+  const fromDefaults = readPrepDefaults().sessionDurationSec
+  if (fromDefaults && isAllowedSessionDuration(fromDefaults)) return fromDefaults
+  return DEFAULT_SESSION_DURATION_SEC
+}
+
 function initialStudioPhase(): 'prep' | 'live' {
   if (typeof window === 'undefined') return 'prep'
   if (isLiveStudioPath(window.location.pathname) && isPrepCompleteInSession()) return 'live'
@@ -47,6 +65,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const [charId, setCharId] = useState<string | null>(defaults.characterId ?? null)
   const [started, setStarted] = useState(false)
   const [seconds, setSeconds] = useState(0)
+  const [sessionDurationSec, setSessionDurationSec] = useState(initialSessionDurationSec)
+  const sessionTimeUpHandledRef = useRef(false)
+  const sessionClosingRef = useRef(false)
+  const [sessionClosing, setSessionClosing] = useState(false)
+  const secondsRef = useRef(0)
+  const endSessionRef = useRef<() => void>(() => {})
   const [statsOpen, setStatsOpen] = useState(true)
   const [micOn, setMicOn] = useState(true)
   const [videoOn, setVideoOn] = useState(true)
@@ -287,6 +311,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   speakingPhaseRef.current = speakingPhase
 
   const sessionLive = studioPhase === 'live' && started && state !== 'IDLE' && state !== 'REPORT'
+  const sessionInteractive = sessionLive && !sessionClosing
   const composureSessionId = getStoredSessionId() ?? 'studio'
   const questionId = `q_${String(turnCount + 1).padStart(3, '0')}`
   const faceAnalysisActive = sessionLive && videoOn && mediaStatus === 'ready'
@@ -299,7 +324,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   })
   // User owns the floor only in LISTENING with no AI TTS (main question or interjection overlay).
   const userOwnsFloor =
-    sessionLive && micOn && state === 'LISTENING' && speakingPhase === 'idle'
+    sessionInteractive && micOn && state === 'LISTENING' && speakingPhase === 'idle'
   // Live user captions on the user's floor; cloud STT still uses MediaRecorder for /turn.
   const browserListenActive = userOwnsFloor
   const browserSpeech = useBrowserSpeechCapture(browserListenActive)
@@ -317,6 +342,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
 
   const commitUserTurn = useCallback(
     async (manual: boolean) => {
+      if (sessionClosingRef.current) return
       if (stateRef.current !== 'LISTENING') return
       manualSubmitRef.current = manual
       const hadRecording = finalizeUserTurn()
@@ -342,7 +368,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const vadMode =
     state === 'ASKING' && speakingPhase === 'audible' ? 'barge-in' : 'utterance'
   const vadEnabled =
-    sessionLive &&
+    sessionInteractive &&
     micOn &&
     ((state === 'LISTENING' && speakingPhase === 'idle') ||
       (state === 'ASKING' && speakingPhase === 'audible'))
@@ -374,7 +400,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const presageVitals = usePresageVitals(sessionLive, reactionSessionId)
 
   useComposureReactions({
-    active: sessionLive && !!reactionSessionId,
+    active: sessionInteractive && !!reactionSessionId,
     sessionId: reactionSessionId,
     sample: composureSample,
     vitals: presageVitals,
@@ -449,10 +475,17 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }, [state])
 
   useEffect(() => {
-    if (!started) return
+    if (!started) {
+      sessionTimeUpHandledRef.current = false
+      return
+    }
     const id = window.setInterval(() => setSeconds((s) => s + 1), 1000)
     return () => window.clearInterval(id)
   }, [started])
+
+  useEffect(() => {
+    secondsRef.current = seconds
+  }, [seconds])
 
   useEffect(() => {
     setMicEnabled(micOn)
@@ -508,6 +541,8 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setInterjectionCaption(null)
     setLastInterjectionTrigger(null)
     setDevForceStress(interjectDevMode())
+    sessionClosingRef.current = false
+    setSessionClosing(false)
     clearPrepComplete()
     setStudioPhase('prep')
   }, [browserSpeech, finish, reset, stop])
@@ -547,6 +582,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         jobTitle,
         scenarioId: mode.id,
         characterId: character.id,
+        sessionDurationSec,
       })
       for (const file of pendingContextFiles) {
         await uploadDocument(session_id, file)
@@ -570,7 +606,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
 
   const enterStudio = async () => {
     if (!mode || !character) return
-    writePrepDefaults({ modeId: mode.id, characterId: character.id })
+    writePrepDefaults({
+      modeId: mode.id,
+      characterId: character.id,
+      sessionDurationSec,
+    })
     markPrepComplete()
     setStudioPhase('live')
     if (window.location.pathname !== '/start/live') {
@@ -587,7 +627,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     void commitUserTurn(true)
   }
 
-  const endSession = () => {
+  const endSession = useCallback(() => {
     finish()
     stop()
     browserSpeech.stop()
@@ -603,7 +643,54 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       })
     }
     navigate('/results')
-  }
+  }, [browserSpeech, character, finish, mode, navigate, seconds, stop])
+
+  endSessionRef.current = endSession
+
+  const playTimedSessionClose = useCallback(async () => {
+    if (sessionClosingRef.current) return
+    sessionClosingRef.current = true
+    sessionTimeUpHandledRef.current = true
+    setSessionClosing(true)
+    setTurnError(null)
+    stopSpeaking()
+    browserSpeech.stop()
+
+    const fallback =
+      "That's our time for today — thank you for practicing with me. Let's wrap up here."
+    let line = fallback
+    const sessionId = getStoredSessionId()
+    if (sessionId) {
+      try {
+        const res = await postSessionClose(sessionId, {
+          elapsedSec: secondsRef.current,
+          durationSec: sessionDurationSec,
+        })
+        if (res.text.trim()) line = res.text.trim()
+      } catch {
+        line = fallback
+      }
+    }
+
+    setInterjectionCaption(null)
+    setLastInterjectionTrigger(null)
+    setCurrentQuestion(line)
+
+    const afterSpoken = () => endSessionRef.current()
+    if (stateRef.current === 'LISTENING' && speakingPhaseRef.current === 'idle') {
+      speakInterjection(line, afterSpoken)
+    } else {
+      ask(line, { onSpoken: afterSpoken })
+    }
+  }, [ask, browserSpeech, sessionDurationSec, speakInterjection, stopSpeaking])
+
+  useEffect(() => {
+    if (!started || sessionDurationSec <= 0) return
+    if (seconds < sessionDurationSec) return
+    if (state === 'THINKING' || transcribing) return
+    if (sessionTimeUpHandledRef.current) return
+    void playTimedSessionClose()
+  }, [seconds, sessionDurationSec, started, state, transcribing, playTimedSessionClose])
 
   const leaveStudio = () => {
     if (sessionLive) {
@@ -657,7 +744,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const aiCaptionLine =
     sessionLive && (interjectionCaption ?? currentQuestion) ? interjectionCaption ?? currentQuestion : null
   const aiCaptionInterjection = Boolean(interjectionCaption)
-  const controlsBusy = state === 'THINKING' || transcribing
+  const controlsBusy = state === 'THINKING' || transcribing || sessionClosing
   const displayError = startError ?? turnError ?? (mediaStatus === 'denied' ? mediaError : null)
 
   if (studioPhase === 'prep') {
@@ -685,6 +772,8 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
           onAddContextFiles={addContextFiles}
           onRemoveContextFile={(index) => setPendingContextFiles((prev) => prev.filter((_, i) => i !== index))}
           contextError={startError}
+          sessionDurationSec={sessionDurationSec}
+          onSessionDurationChange={setSessionDurationSec}
           entering={starting}
           enterError={startError}
           onEnterStudio={() => void enterStudio()}
@@ -705,8 +794,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         mode={mode}
         character={character}
         sessionLive={sessionLive}
+        sessionClosing={sessionClosing}
         started={started}
         seconds={seconds}
+        sessionDurationSec={sessionDurationSec}
         state={state}
         statsOpen={statsOpen}
         onToggleStats={() => setStatsOpen((s) => !s)}

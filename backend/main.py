@@ -35,9 +35,15 @@ from composure_thresholds import (
     SETTINGS_INTERJECT_COUNT,
     SETTINGS_LAST_INTERJECT_AT_MS,
 )
-from interviewer import generate_interjection, next_turn, opening_question
+from interviewer import generate_interjection, generate_session_closing, next_turn, opening_question
 
-from judge import score
+from judge import (
+    SETTINGS_SESSION_REPORT_KEY,
+    apply_session_report_to_turns,
+    pending_turn_scores,
+    score,
+    score_session,
+)
 
 from repository import (
 
@@ -238,7 +244,7 @@ def _session_payload(session_id: str) -> dict[str, Any]:
     settings = get_session_settings(session_id)
     persona_settings = {
         key: settings[key]
-        for key in ("scenario_id", "character_id")
+        for key in ("scenario_id", "character_id", "session_duration_sec")
         if key in settings
     }
 
@@ -264,6 +270,7 @@ def _session_payload(session_id: str) -> dict[str, Any]:
 
 ALLOWED_SCENARIO_IDS = frozenset({"salary", "interview", "speaking", "thesis"})
 ALLOWED_CHARACTER_IDS = frozenset({"recruiter", "manager", "hr"})
+ALLOWED_SESSION_DURATION_SEC = frozenset({60, 180, 300, 600, 900})
 
 
 class CreateSessionRequest(BaseModel):
@@ -274,8 +281,7 @@ class CreateSessionRequest(BaseModel):
 
     character_id: str | None = None
 
-
-
+    session_duration_sec: int | None = None
 
 
 class TurnRequest(BaseModel):
@@ -297,6 +303,18 @@ class InterjectResponse(BaseModel):
     resume: bool = True
 
 
+class SessionCloseRequest(BaseModel):
+
+    elapsed_sec: int | None = None
+
+    duration_sec: int | None = None
+
+
+class SessionCloseResponse(BaseModel):
+
+    text: str
+
+
 
 
 
@@ -312,11 +330,17 @@ def post_sessions(body: CreateSessionRequest = CreateSessionRequest()):
     if character_id and character_id not in ALLOWED_CHARACTER_IDS:
         raise HTTPException(status_code=400, detail="invalid_character_id")
 
-    settings: dict[str, str] = {}
+    duration_sec = body.session_duration_sec
+    if duration_sec is not None and duration_sec not in ALLOWED_SESSION_DURATION_SEC:
+        raise HTTPException(status_code=400, detail="invalid_session_duration")
+
+    settings: dict[str, Any] = {}
     if scenario_id:
         settings["scenario_id"] = scenario_id
     if character_id:
         settings["character_id"] = character_id
+    if duration_sec is not None:
+        settings["session_duration_sec"] = duration_sec
 
     session_id = create_session(job_title=job_title or None, settings=settings if settings else None)
     return {
@@ -341,9 +365,22 @@ def get_session_by_id(session_id: str):
 
 @app.get("/sessions/{session_id}/report")
 
-def get_session_report(session_id: str):
+def _get_or_build_session_report(session_id: str) -> dict[str, Any]:
+    settings = get_session_settings(session_id)
+    cached = settings.get(SETTINGS_SESSION_REPORT_KEY)
+    if isinstance(cached, dict) and cached.get("rubric"):
+        return cached
+    report = score_session(session_id)
+    set_session_setting(session_id, SETTINGS_SESSION_REPORT_KEY, report)
+    return report
 
-    return _session_payload(session_id)
+
+def get_session_report(session_id: str):
+    payload = _session_payload(session_id)
+    report = _get_or_build_session_report(session_id)
+    payload["session_report"] = report
+    payload["turns"] = apply_session_report_to_turns(payload["turns"], report)
+    return payload
 
 
 @app.get("/sessions/{session_id}/vitals")
@@ -424,23 +461,15 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
 
 
 
-    score_task = asyncio.create_task(asyncio.to_thread(score, answer))
-
     composure_task = asyncio.create_task(asyncio.to_thread(sample_composure, answer))
 
+    composure_value = await composure_task
 
+    decision = await asyncio.to_thread(decide, composure_value, turn_history)
 
-    async def director_task() -> dict[str, Any]:
+    composure = composure_value
 
-        rubric, composure_value = await asyncio.gather(score_task, composure_task)
-
-        return await asyncio.to_thread(decide, rubric, composure_value, turn_history)
-
-
-
-    scores, decision = await asyncio.gather(score_task, director_task())
-
-    composure = decision["input_snapshot"]["composure"]
+    scores = pending_turn_scores(composure_value)
 
 
 
@@ -465,6 +494,8 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
         "next_question": next_question,
 
     }
+
+    set_session_setting(session_id, SETTINGS_SESSION_REPORT_KEY, None)
 
     append_turn(session_id, record)
 
@@ -525,6 +556,26 @@ def post_session_interject(session_id: str, body: InterjectRequest):
     set_session_setting(session_id, SETTINGS_LAST_INTERJECT_AT_MS, now_ms)
 
     return InterjectResponse(text=result["text"], resume=bool(result.get("resume", True)))
+
+
+@app.post("/sessions/{session_id}/close", response_model=SessionCloseResponse)
+def post_session_close(session_id: str, body: SessionCloseRequest = SessionCloseRequest()):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    settings = get_session_settings(session_id)
+    cached = settings.get("session_closing_text")
+    if isinstance(cached, str) and cached.strip():
+        return SessionCloseResponse(text=cached.strip())
+
+    result = generate_session_closing(
+        session_id,
+        elapsed_sec=body.elapsed_sec,
+        duration_sec=body.duration_sec,
+    )
+    text = str(result.get("text", "")).strip() or "Thanks for your time today — we'll wrap up here."
+    set_session_setting(session_id, "session_closing_text", text)
+    return SessionCloseResponse(text=text)
 
 
 
@@ -604,11 +655,11 @@ def debug_seams():
 
 
 
-    rubric = score(sample_answer)
-
     composure_value = sample_composure()
 
-    decision = decide(rubric, composure_value, sample_history)
+    decision = decide(composure_value, sample_history)
+
+    rubric = score(sample_answer)
 
     question = next_turn(sample_history, session_id=session_id)
 

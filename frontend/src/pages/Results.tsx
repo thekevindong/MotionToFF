@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Navigate } from '../App'
-import { getSession as fetchSession } from '../lib/api'
+import { getSession as fetchSessionApi, getSessionReport } from '../lib/api'
 import type { SessionTurn } from '../lib/api-types'
 import {
   buildImprovements,
@@ -38,7 +38,10 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   useEffect(() => {
     let cancelled = false
     const sessionId = summary?.sessionId ?? getStoredSessionId()
-    fetchSession(sessionId ?? undefined)
+    const load = sessionId
+      ? getSessionReport(sessionId)
+      : fetchSessionApi(undefined)
+    load
       .then((data) => {
         if (!cancelled) {
           setState({
