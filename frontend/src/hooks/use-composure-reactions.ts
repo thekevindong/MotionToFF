@@ -83,6 +83,8 @@ interface Args {
   speechWpm: number | null
   devForceStress: boolean
   onInterjection: (text: string, trigger: InterjectTrigger) => void
+  /** Fires when a trigger is confirmed — before Gemini interjection returns. */
+  onInterjectionArm?: (trigger: InterjectTrigger) => void
   onInterjectionError?: (message: string) => void
   onDeliveryMood?: (mood: DeliveryMood) => void
 }
@@ -97,6 +99,7 @@ export function useComposureReactions({
   speechWpm,
   devForceStress,
   onInterjection,
+  onInterjectionArm,
   onInterjectionError,
   onDeliveryMood,
 }: Args) {
@@ -190,11 +193,13 @@ export function useComposureReactions({
 
     const snapshot = buildSnapshot(sample, vitals, speechWpm)
     sustainedRef.current = { trigger: null, count: 0 }
+    onInterjectionArm?.(trigger)
     trySchedule({ trigger, snapshot })
   }, [
     active,
     devForceStress,
     onDeliveryMood,
+    onInterjectionArm,
     sample,
     sessionId,
     speechWpm,

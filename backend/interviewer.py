@@ -41,7 +41,12 @@ TONE_GUARDRAILS = """This is a practice session for the candidate's growth — d
 - If live delivery signals show stress or low composure, ease up: shorter questions, warmer acknowledgment, no piling on."""
 
 SCENARIO_SALARY_ADDENDUM = """Scenario: salary negotiation for a job offer (not a generic behavioral interview).
-Focus on compensation expectations, justification, benefits, timing, and counters. After a brief acknowledgment, ask exactly ONE new negotiation question per turn unless the negotiation is clearly finished — then close warmly with end_session true."""
+Focus on compensation expectations, justification, benefits, timing, and counters. After a brief acknowledgment, ask exactly ONE new negotiation question per turn unless the negotiation is clearly finished — then close warmly with end_session true.
+Never pivot to unrelated behavioral interview topics (e.g. "tell me about yourself", teamwork stories, generic strengths) unless they directly support a compensation argument."""
+
+SALARY_TURN_ANCHOR = (
+    "[Scenario lock: salary/compensation negotiation only — no generic behavioral interview questions.]"
+)
 
 # Interactions API (recommended over legacy generateContent). See:
 # https://ai.google.dev/gemini-api/docs/interactions-overview
@@ -89,7 +94,10 @@ SALARY_FOLLOWUP_SUFFIX = (
 )
 
 
-def _delivery_tone_appendix(delivery: dict[str, Any] | None) -> str:
+def _delivery_tone_appendix(
+    delivery: dict[str, Any] | None,
+    session_id: str | None = None,
+) -> str:
     """Presage + director pacing hint for the next Gemini line (not shown to candidate)."""
     if not delivery:
         return ""
@@ -111,17 +119,31 @@ def _delivery_tone_appendix(delivery: dict[str, Any] | None) -> str:
             + "). You may ask one respectful, challenging follow-up — stay professional, not harsh."
         )
     elif action == "curveball":
-        tone = (
-            "Delivery signals: comfortable session (~"
-            + comp_note
-            + "). Shift topic angle slightly while staying friendly."
-        )
+        if _is_salary_scenario(session_id):
+            tone = (
+                "Delivery signals: comfortable session (~"
+                + comp_note
+                + "). Shift negotiation angle (e.g. equity, bonus, level) while staying friendly."
+            )
+        else:
+            tone = (
+                "Delivery signals: comfortable session (~"
+                + comp_note
+                + "). Shift topic angle slightly while staying friendly."
+            )
     else:
-        tone = (
-            "Delivery signals: composure ~"
-            + comp_note
-            + ". Standard supportive interview tone."
-        )
+        if _is_salary_scenario(session_id):
+            tone = (
+                "Delivery signals: composure ~"
+                + comp_note
+                + ". Standard supportive salary-negotiation tone."
+            )
+        else:
+            tone = (
+                "Delivery signals: composure ~"
+                + comp_note
+                + ". Standard supportive interview tone."
+            )
 
     extra = f"\n\n[Session pacing — {tone}"
     if rationale:
@@ -157,11 +179,19 @@ def build_interviewer_context(session_id: str | None) -> str:
     block = "\n\n".join(parts)
     if len(block) > CONTEXT_MAX_CHARS:
         block = block[: CONTEXT_MAX_CHARS - 3].rstrip() + "..."
-    return (
-        "Use the candidate background below to ask relevant, specific interview questions. "
-        "Reference their experience when natural; do not read the documents aloud.\n\n"
-        + block
-    )
+    settings = _session_persona_settings(session_id)
+    if settings.get("scenario_id") == "salary":
+        lead_in = (
+            "Use the candidate background below to ask relevant salary-negotiation questions "
+            "(comp, level, scope, market data). Reference their experience when it supports their ask; "
+            "do not read the documents aloud.\n\n"
+        )
+    else:
+        lead_in = (
+            "Use the candidate background below to ask relevant, specific interview questions. "
+            "Reference their experience when natural; do not read the documents aloud.\n\n"
+        )
+    return lead_in + block
 
 
 def _session_persona_settings(session_id: str | None) -> dict[str, Any]:
@@ -171,6 +201,10 @@ def _session_persona_settings(session_id: str | None) -> dict[str, Any]:
 
     settings = get_session_settings(session_id)
     return settings if isinstance(settings, dict) else {}
+
+
+def _is_salary_scenario(session_id: str | None) -> bool:
+    return _session_persona_settings(session_id).get("scenario_id") == "salary"
 
 
 def _mock_question_bank(session_id: str | None) -> list[str]:
@@ -252,7 +286,7 @@ def _followup_suffix(session_id: str | None) -> str:
     return FOLLOWUP_SUFFIX
 
 
-def _history_as_recovery_input(history: History) -> str:
+def _history_as_recovery_input(history: History, session_id: str | None = None) -> str:
     """Rebuild prompt when server-side interaction state was lost (e.g. old session)."""
     lines: list[str] = []
     for entry in history:
@@ -262,9 +296,15 @@ def _history_as_recovery_input(history: History) -> str:
             continue
         label = "Interviewer" if role == "interviewer" else "Candidate"
         lines.append(f"{label}: {text}")
-    lines.append(
-        "Interviewer: (briefly acknowledge their last answer, then ask the next interview question)"
-    )
+    if _is_salary_scenario(session_id):
+        closing = (
+            "Interviewer: (briefly acknowledge their last answer, then ask the next salary negotiation question)"
+        )
+    else:
+        closing = (
+            "Interviewer: (briefly acknowledge their last answer, then ask the next interview question)"
+        )
+    lines.append(closing)
     return "\n".join(lines)
 
 
@@ -484,13 +524,16 @@ def _gemini_next_turn(
         answer = _latest_candidate_answer(history)
         if not answer:
             raise ValueError("Turn history missing candidate answer")
-        suffix = _followup_suffix(session_id) + _delivery_tone_appendix(delivery_context)
-        body["input"] = f"{answer}{suffix}"
+        suffix = _followup_suffix(session_id) + _delivery_tone_appendix(
+            delivery_context, session_id
+        )
+        anchor = f"{SALARY_TURN_ANCHOR}\n\n" if _is_salary_scenario(session_id) else ""
+        body["input"] = f"{anchor}{answer}{suffix}"
         body["previous_interaction_id"] = previous_id
     else:
         # No stored interaction (legacy session / mock fallback earlier) — start a new chain.
         body["system_instruction"] = _system_instruction(session_id)
-        body["input"] = _history_as_recovery_input(history)
+        body["input"] = _history_as_recovery_input(history, session_id)
 
     payload = _create_interaction(body, api_key)
     interaction_id = payload.get("id")
@@ -578,11 +621,24 @@ def _mock_interjection(trigger: str, session_id: str | None) -> str:
     return pool[idx]
 
 
+def _interjection_persona(session_id: str | None) -> str:
+    """Short persona for coach overlays — avoids resending full document context."""
+    settings = _session_persona_settings(session_id)
+    character_id = settings.get("character_id")
+    if isinstance(character_id, str) and character_id in CHARACTER_PERSONAS:
+        base = CHARACTER_PERSONAS[character_id]
+    else:
+        base = "You are the interviewer in a live practice session."
+    if _is_salary_scenario(session_id):
+        base = f"{base}\n\n{SCENARIO_SALARY_ADDENDUM}"
+    return base
+
+
 def _gemini_interjection(
     trigger: str, snapshot: dict[str, Any], api_key: str, session_id: str | None
 ) -> str:
     model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
-    persona = _persona_instruction(session_id)
+    persona = _interjection_persona(session_id)
     metrics = json.dumps(snapshot, ensure_ascii=True)
     body: dict[str, Any] = {
         "model": model,

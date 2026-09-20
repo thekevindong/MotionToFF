@@ -13,7 +13,7 @@ export const INTERJECT = {
   /** Samples at 1 Hz — sustained breach required */
   sustainedSec: 4,
   /** Sustained "strong presence" before opponent shows a warmer expression */
-  pleasedSustainedSec: 4,
+  pleasedSustainedSec: 2,
 } as const
 
 export type InterjectTrigger =

@@ -4,7 +4,7 @@ import type { Navigate } from '../App'
 import type { DeliveryMood, InterjectTrigger } from '../config/composure-thresholds'
 import { interjectDevMode } from '../config/composure-thresholds'
 import type { CharacterId } from '../config/character-expressions'
-import type { TurnState } from '../lib/contracts'
+import type { ComposureSample, TurnState } from '../lib/contracts'
 import { MODES, SALARY_CHARACTERS, type Character, type Mode } from '../config/modes'
 import {
   DEFAULT_SESSION_DURATION_SEC,
@@ -20,6 +20,7 @@ import { useVoiceActivity } from '../hooks/use-voice-activity'
 import { useMediaStream } from '../hooks/use-media-stream'
 import { usePresageVitals } from '../hooks/use-presage-vitals'
 import { presageStatusLabel, usePresageMetrics } from '../hooks/use-presage-metrics'
+import { localDirectorAction } from '../lib/local-director'
 import {
   createSession,
   getHealth,
@@ -100,10 +101,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const stageRef = useRef<HTMLDivElement>(null)
   const [userCaption, setUserCaption] = useState('')
   const [lingeringUserCaption, setLingeringUserCaption] = useState('')
+  const [userUtteranceActive, setUserUtteranceActive] = useState(false)
   const [interjectionCaption, setInterjectionCaption] = useState<string | null>(null)
   const [lastInterjectionTrigger, setLastInterjectionTrigger] = useState<InterjectTrigger | null>(null)
   const [deliveryMood, setDeliveryMood] = useState<DeliveryMood>('neutral')
   const [devForceStress, setDevForceStress] = useState(() => interjectDevMode())
+  const composureSampleRef = useRef<ComposureSample | null>(null)
 
   const mode = MODES.find((m) => m.id === modeId) ?? null
   const character = SALARY_CHARACTERS.find((c) => c.id === charId) ?? null
@@ -177,6 +180,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         return
       }
       setTurnError(null)
+      const optimisticComposure =
+        composureSampleRef.current?.composure ?? backendComposure ?? 0.5
+      setLastDirector({
+        action: localDirectorAction(optimisticComposure, text, turnCount),
+      })
       try {
         const data = await postTurn(text, sessionId)
         const snapshot = data.decision.input_snapshot as { composure?: number } | undefined
@@ -206,7 +214,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         armListenRef.current()
       }
     },
-    [cloudSttConfigured],
+    [backendComposure, cloudSttConfigured, turnCount],
   )
 
   const processTurnAnswerRef = useRef(processTurnAnswer)
@@ -352,8 +360,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   // User owns the floor only in LISTENING with no AI TTS (main question or interjection overlay).
   const userOwnsFloor =
     sessionInteractive && micOn && state === 'LISTENING' && speakingPhase === 'idle'
+  const userCaptionFloor = userOwnsFloor || userUtteranceActive
   // Live user captions on the user's floor; cloud STT still uses MediaRecorder for /turn.
-  const browserListenActive = userOwnsFloor
+  const browserListenActive = userCaptionFloor
   const browserSpeech = useBrowserSpeechCapture(browserListenActive)
   browserSpeechApiRef.current = {
     getTranscript: browserSpeech.getTranscript,
@@ -362,21 +371,22 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }
   const userCaptionLingerActive =
     Boolean(lingeringUserCaption.trim()) && (state === 'THINKING' || transcribing)
-  const showUserCaptions = userOwnsFloor || userCaptionLingerActive
+  const showUserCaptions = userCaptionFloor || userCaptionLingerActive
   const coachOverlayPlaying =
     Boolean(interjectionCaption) && state === 'LISTENING' && speakingPhase !== 'idle'
   /** Barge-in / answer turn: user over AI. Main question + coach overlay: AI over user. */
   const captionPriority: 'user' | 'ai' =
-    (userOwnsFloor && !coachOverlayPlaying) ||
+    (userCaptionFloor && !coachOverlayPlaying) ||
     (userCaptionLingerActive && !coachOverlayPlaying)
       ? 'user'
       : 'ai'
-  const stageUserCaption = userOwnsFloor ? userCaption : lingeringUserCaption
+  const stageUserCaption = userCaptionFloor ? userCaption : lingeringUserCaption
 
   const commitUserTurn = useCallback(
     async (manual: boolean) => {
       if (sessionClosingRef.current) return
       if (stateRef.current !== 'LISTENING') return
+      setUserUtteranceActive(false)
       manualSubmitRef.current = manual
       const hadRecording = finalizeUserTurn()
       if (!isCloudSttActiveNow()) {
@@ -411,6 +421,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   useVoiceActivity(stream, vadEnabled, vadMode, {
     onSpeechStart: () => {
       if (stateRef.current !== 'LISTENING') return
+      setUserUtteranceActive(true)
       browserSpeech.reset()
       setUserCaption('')
       setLingeringUserCaption('')
@@ -419,6 +430,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     onSpeechEnd: (hadMinSpeech) => {
       if (stateRef.current !== 'LISTENING') return
       if (!hadMinSpeech) {
+        setUserUtteranceActive(false)
         armListenMode()
         return
       }
@@ -457,6 +469,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     speechWpm,
     devForceStress,
     onInterjection: onPresageInterjection,
+    onInterjectionArm: setLastInterjectionTrigger,
     onDeliveryMood: setDeliveryMood,
   })
   const presageStatus = presageStatusLabel({
@@ -477,7 +490,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   )
 
   useEffect(() => {
-    if (!userOwnsFloor) {
+    if (!userCaptionFloor) {
       if (!userCaptionLingerActive) setUserCaption('')
       return
     }
@@ -487,7 +500,15 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       if (live.trim()) setLingeringUserCaption(live)
     }, 200)
     return () => window.clearInterval(id)
-  }, [userOwnsFloor, userCaptionLingerActive, browserSpeech])
+  }, [userCaptionFloor, userCaptionLingerActive, browserSpeech])
+
+  composureSampleRef.current = composureSample
+
+  useEffect(() => {
+    if (state !== 'LISTENING' || speakingPhase !== 'idle') {
+      setUserUtteranceActive(false)
+    }
+  }, [state, speakingPhase])
 
   useEffect(() => {
     transcribingRef.current = transcribing

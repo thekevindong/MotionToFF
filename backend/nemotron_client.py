@@ -13,8 +13,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# mini-4b-instruct is legacy on the API catalog; Nano 8B v1 is the usual fast Nemotron replacement.
-DEFAULT_NEMOTRON_MODEL = "nvidia/llama-3.1-nemotron-nano-8b-v1"
+# llama-3.1-nemotron-nano-8b-v1 is retired on build.nvidia.com; use Nano 9B v2 (Aug 2025 catalog).
+DEFAULT_NEMOTRON_MODEL = "nvidia/nvidia-nemotron-nano-9b-v2"
 DEFAULT_NEMOTRON_API_BASE = "https://integrate.api.nvidia.com/v1"
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
