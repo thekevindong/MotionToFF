@@ -225,19 +225,9 @@ export async function getSessionReport(sessionId: string): Promise<SessionRespon
   return res.json()
 }
 
-export async function postTurn(
-  answer: string,
-  sessionId?: string,
-  options?: { qaTimeRemainingSec?: number; qaExpired?: boolean },
-): Promise<TurnResponse> {
+export async function postTurn(answer: string, sessionId?: string): Promise<TurnResponse> {
   const path = sessionId ? `/sessions/${sessionId}/turn` : '/turn'
-  const payload: Record<string, unknown> = { answer: answer.trim() }
-  if (typeof options?.qaTimeRemainingSec === 'number') {
-    payload.qa_time_remaining_sec = options.qaTimeRemainingSec
-  }
-  if (options?.qaExpired) {
-    payload.qa_expired = true
-  }
+  const payload = { answer: answer.trim() }
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

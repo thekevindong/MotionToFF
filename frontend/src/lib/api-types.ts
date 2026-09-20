@@ -53,7 +53,6 @@ export type CommitteeVoiceGender = 'female' | 'male'
 export type ThesisPrepareResponse = {
   thesis_pack: ThesisPackId
   presentation_duration_sec: number
-  qa_duration_sec: number
   qa_question_count: number
   character_id: string
   committee_voice_gender: CommitteeVoiceGender

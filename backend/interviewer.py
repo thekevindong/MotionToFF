@@ -151,7 +151,7 @@ SALARY_FOLLOWUP_SUFFIX = (
     "\n\nBrief acknowledgment + one salary negotiation question (~35–55 words total)."
 )
 THESIS_FOLLOWUP_SUFFIX = (
-    "\n\nQ&A time is limited. Brief acknowledgment, then exactly ONE new defense question (~35 words). "
+    "\n\nBrief acknowledgment, then exactly ONE new defense question (~35 words). "
     "Vary angle (methods, results, validity, limitations). Never ask about content not in the uploaded defense text."
 )
 JSON_TURN_REMINDER = (

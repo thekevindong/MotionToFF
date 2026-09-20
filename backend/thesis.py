@@ -13,13 +13,13 @@ from interviewer import _create_interaction, _extract_interaction_text
 logger = logging.getLogger(__name__)
 
 THESIS_PACKS: dict[str, dict[str, int]] = {
-    "short": {"presentation_duration_sec": 30, "qa_duration_sec": 60, "qa_question_count": 3},
-    "long": {"presentation_duration_sec": 60, "qa_duration_sec": 120, "qa_question_count": 5},
+    "short": {"presentation_duration_sec": 30, "qa_question_count": 3},
+    "long": {"presentation_duration_sec": 60, "qa_question_count": 5},
 }
 ALLOWED_THESIS_PACKS = frozenset(THESIS_PACKS.keys())
 COMMITTEE_CHARACTER_IDS = ("recruiter", "manager", "hr")
 COMMITTEE_VOICE_GENDERS = ("female", "male")
-ALLOWED_THESIS_SESSION_DURATION_SEC = frozenset({90, 180})
+ALLOWED_THESIS_SESSION_DURATION_SEC = frozenset({30, 60})
 
 MIN_DEFENSE_CHARS = 80
 DEFENSE_TEXT_PREVIEW_LEN = 300
@@ -278,7 +278,6 @@ def thesis_prepare(session_id: str, thesis_pack: str) -> dict[str, Any]:
 
     set_session_setting(session_id, "thesis_pack", pack)
     set_session_setting(session_id, "presentation_duration_sec", durations["presentation_duration_sec"])
-    set_session_setting(session_id, "qa_duration_sec", durations["qa_duration_sec"])
     set_session_setting(session_id, "qa_question_count", durations["qa_question_count"])
     set_session_setting(session_id, "defense_document_id", doc_meta["document_id"])
     set_session_setting(session_id, "defense_filename", doc_meta["filename"])
@@ -288,7 +287,6 @@ def thesis_prepare(session_id: str, thesis_pack: str) -> dict[str, Any]:
     return {
         "thesis_pack": pack,
         "presentation_duration_sec": durations["presentation_duration_sec"],
-        "qa_duration_sec": durations["qa_duration_sec"],
         "qa_question_count": durations["qa_question_count"],
         "character_id": character_id,
         "committee_voice_gender": voice_gender,
@@ -302,14 +300,12 @@ def _presentation_complete_response(settings: dict[str, Any]) -> dict[str, Any]:
     skipped = bool(settings.get("skipped_qa"))
     if skipped:
         return {"ok": True, "end_session": True, "skip_qa": True}
-    qa_sec = settings.get("qa_duration_sec")
     character_id = (settings.get("character_id") or "").strip()
     return {
         "ok": True,
         "end_session": False,
         "skip_qa": False,
         "committee_character_id": character_id,
-        "qa_duration_sec": int(qa_sec) if isinstance(qa_sec, (int, float)) else 60,
     }
 
 

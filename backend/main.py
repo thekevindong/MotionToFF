@@ -274,7 +274,6 @@ def _session_payload(session_id: str) -> dict[str, Any]:
             "session_duration_sec",
             "thesis_pack",
             "presentation_duration_sec",
-            "qa_duration_sec",
             "qa_question_count",
             "defense_document_id",
             "defense_filename",
@@ -333,8 +332,6 @@ class CreateSessionRequest(BaseModel):
 class TurnRequest(BaseModel):
 
     answer: str = Field(..., min_length=1)
-    qa_time_remaining_sec: int | None = None
-    qa_expired: bool | None = None
 
 
 class InterjectRequest(BaseModel):
@@ -436,7 +433,6 @@ class ThesisPrepareRequest(BaseModel):
 class ThesisPrepareResponse(BaseModel):
     thesis_pack: str
     presentation_duration_sec: int
-    qa_duration_sec: int
     qa_question_count: int
     character_id: str
     committee_voice_gender: str
@@ -460,7 +456,6 @@ class ThesisPresentationCompleteResponse(BaseModel):
     end_session: bool = False
     skip_qa: bool = False
     committee_character_id: str | None = None
-    qa_duration_sec: int | None = None
     handoff_line: str | None = None
 
 

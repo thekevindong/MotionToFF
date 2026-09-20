@@ -103,7 +103,10 @@ export function ThesisLive({
   const [cloudSttConfigured, setCloudSttConfigured] = useState(false)
   const [bootError, setBootError] = useState(null as string | null)
   const [userCaption, setUserCaption] = useState('')
+  const [lingeringUserCaption, setLingeringUserCaption] = useState('')
+  const [userAnswerCaptionHold, setUserAnswerCaptionHold] = useState(false)
   const [aiCaption, setAiCaption] = useState<string | null>(null)
+  const [qaElapsedSec, setQaElapsedSec] = useState(0)
 
   const selfVideoRef = useRef<HTMLVideoElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
@@ -114,6 +117,12 @@ export function ThesisLive({
   const qaStateRef = useRef<TurnState>('IDLE')
   const speakingPhaseRef = useRef<'idle' | 'loading' | 'audible'>('idle')
   const submitQaAnswerRef = useRef<() => Promise<void>>(async () => {})
+
+  const releaseUserAnswerCaption = useCallback(() => {
+    setUserAnswerCaptionHold(false)
+    setLingeringUserCaption('')
+    setUserCaption('')
+  }, [])
 
   const qaQuestionCount = qaQuestionCountFromPrep(prep)
   const handoffVoiceGender: CharacterGender =
@@ -199,6 +208,22 @@ export function ThesisLive({
     characterId: null,
     voiceGender: handoffVoiceGender,
   })
+
+  const askCommittee = useCallback(
+    (
+      text: string,
+      options?: {
+        holdFloor?: boolean
+        voiceGender?: CharacterGender
+        onSpoken?: () => void
+      },
+    ) => {
+      releaseUserAnswerCaption()
+      setAiCaption(text)
+      ask(text, options)
+    },
+    [ask, releaseUserAnswerCaption],
+  )
 
   qaStateRef.current = qaState
   speakingPhaseRef.current = speakingPhase
@@ -332,7 +357,7 @@ export function ThesisLive({
         if (turnRequestsReportEnd(data)) {
           sessionClosingRef.current = true
           setSessionClosing(true)
-          ask(data.next_question.text, {
+          askCommittee(data.next_question.text, {
             holdFloor: true,
             voiceGender: randomCommitteeVoice(),
             onSpoken: () => navigateResultsWithSession(),
@@ -340,7 +365,7 @@ export function ThesisLive({
           return
         }
         setCurrentQuestion(data.next_question.text)
-        ask(data.next_question.text, {
+        askCommittee(data.next_question.text, {
           voiceGender: randomCommitteeVoice(),
           onSpoken: () => listen(),
         })
@@ -352,7 +377,7 @@ export function ThesisLive({
         setTranscribing(false)
       }
     },
-    [armListenMode, ask, listen, navigateResultsWithSession],
+    [armListenMode, askCommittee, listen, navigateResultsWithSession],
   )
 
   useEffect(() => {
@@ -361,16 +386,14 @@ export function ThesisLive({
     if (sessionClosingRef.current) return
     handoffPlayedRef.current = true
     const playFirstQuestion = () => {
-      setAiCaption(currentQuestion)
-      ask(currentQuestion, {
+      askCommittee(currentQuestion, {
         voiceGender: randomCommitteeVoice(),
         onSpoken: () => listen(),
       })
     }
     const line = handoffLine?.trim()
     if (line) {
-      setAiCaption(line)
-      ask(line, {
+      askCommittee(line, {
         voiceGender: handoffVoiceGender,
         onSpoken: playFirstQuestion,
       })
@@ -378,7 +401,7 @@ export function ThesisLive({
       playFirstQuestion()
     }
   }, [
-    ask,
+    askCommittee,
     currentQuestion,
     handoffLine,
     handoffVoiceGender,
@@ -388,15 +411,30 @@ export function ThesisLive({
     sessionPhase,
   ])
 
+  const userCaptionLingerActive =
+    Boolean(lingeringUserCaption.trim()) && (qaState === 'THINKING' || transcribing)
+  const qaUserCaptionFloor =
+    qaLive && userAnswerCaptionHold && qaState === 'LISTENING' && speakingPhase === 'idle'
+  const showQaUserCaptions = qaUserCaptionFloor || userCaptionLingerActive
+
   useEffect(() => {
-    if (sessionPhase !== 'qa' || !qaLive) return
+    if (!qaUserCaptionFloor) {
+      if (!userCaptionLingerActive) setUserCaption('')
+      return
+    }
     const id = window.setInterval(() => {
-      if (qaState === 'LISTENING' && speakingPhase === 'idle') {
-        setUserCaption(browserSpeech.getLiveCaption())
-      }
+      const live = browserSpeech.getLiveCaption()
+      setUserCaption(live)
+      if (live.trim()) setLingeringUserCaption(live)
     }, 200)
     return () => window.clearInterval(id)
-  }, [browserSpeech, qaLive, qaState, sessionPhase, speakingPhase])
+  }, [browserSpeech, qaUserCaptionFloor, userCaptionLingerActive])
+
+  useEffect(() => {
+    if (sessionPhase !== 'qa' || !qaStarted) return
+    const id = window.setInterval(() => setQaElapsedSec((s) => s + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [qaStarted, sessionPhase])
 
   const submitQaAnswer = useCallback(async () => {
     if (processingQaRef.current || transcribing || sessionClosingRef.current) return
@@ -404,6 +442,8 @@ export function ThesisLive({
     browserSpeech.stop()
     const text = browserSpeech.getTranscript().trim() || browserSpeech.getLiveCaption().trim()
     finalizeUserTurn()
+    const linger = text.trim() || lingeringUserCaption.trim()
+    if (linger) setLingeringUserCaption(linger)
     browserSpeech.reset()
     setUserCaption('')
     await processQaAnswer(text)
@@ -428,8 +468,10 @@ export function ThesisLive({
     {
       onSpeechStart: () => {
         if (qaStateRef.current !== 'LISTENING') return
+        setUserAnswerCaptionHold(true)
         browserSpeech.reset()
         setUserCaption('')
+        setLingeringUserCaption('')
         startUtteranceRecording()
       },
       onSpeechEnd: (hadMinSpeech) => {
@@ -443,6 +485,7 @@ export function ThesisLive({
       onBargeIn: () => {
         if (qaStateRef.current !== 'ASKING' || speakingPhaseRef.current !== 'audible') return
         stopSpeaking()
+        setUserAnswerCaptionHold(true)
         browserSpeech.reset()
         setUserCaption('')
         armListenMode()
@@ -491,12 +534,18 @@ export function ThesisLive({
     sessionPhase === 'presentation' ? flowToTurnState(presentationFlow, qaState) : qaState
 
   const timerStarted = sessionPhase === 'presentation' ? presentationStarted : qaStarted
-  const timerSeconds = sessionPhase === 'presentation' ? presentationSeconds : qaAnswersCompleted
+  const timerSeconds = sessionPhase === 'presentation' ? presentationSeconds : qaElapsedSec
   const timerDuration = sessionPhase === 'presentation' ? presentationDurationSec : 0
   const qaQuestionLabel =
     sessionPhase === 'qa' && qaStarted
-      ? `Question ${Math.min(qaAnswersCompleted + 1, qaQuestionCount)}/${qaQuestionCount}`
+      ? `Q&A · Question ${Math.min(qaAnswersCompleted + 1, qaQuestionCount)}/${qaQuestionCount}`
       : null
+
+  const stageUserCaption = qaUserCaptionFloor ? userCaption : lingeringUserCaption
+  const captionPriority: 'user' | 'ai' =
+    presenting || (sessionPhase === 'qa' && (showQaUserCaptions || userAnswerCaptionHold))
+      ? 'user'
+      : 'ai'
 
   const controlsBusy =
     presentationFlow === 'PRESENTATION_SUBMIT' || transcribing || sessionClosing
@@ -527,9 +576,9 @@ export function ThesisLive({
         opponentImg=""
         stageBackgroundSrc={stageBackgroundSrc}
         aiCaptionLine={sessionPhase === 'qa' ? aiCaption ?? currentQuestion : null}
-        userCaption={userCaption}
-        userCaptionsEnabled={presenting || (qaLive && qaState === 'LISTENING')}
-        captionPriority={sessionPhase === 'qa' && qaState === 'ASKING' ? 'ai' : 'user'}
+        userCaption={presenting ? userCaption : showQaUserCaptions ? stageUserCaption : ''}
+        userCaptionsEnabled={presenting || showQaUserCaptions}
+        captionPriority={captionPriority}
         displayError={displayError}
         voiceHint={restartNote ?? voiceHint}
         stream={stream}
@@ -566,7 +615,7 @@ export function ThesisLive({
           ) : undefined
         }
         isThesisPresentationRail={sessionPhase === 'presentation'}
-        thesisFloatingCamera={sessionPhase === 'presentation'}
+        thesisFloatingCamera
       />
     </div>
   )

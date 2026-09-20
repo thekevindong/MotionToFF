@@ -30,6 +30,7 @@ const SPEAKING_STATE_LABELS: Record<SpeakingFlowState, string> = {
 }
 
 const CAM_TILE_POS_KEY = 'speakup_camtile_pos'
+const CAM_TILE_POS_TOP_CENTER_KEY = 'speakup_camtile_pos_top_center'
 
 function fmt(sec: number) {
   const m = Math.floor(sec / 60)
@@ -46,6 +47,7 @@ function CameraTile({
   stageRef,
   variant = 'floating',
   defaultCorner = 'top-right',
+  posStorageKey,
 }: {
   stream: MediaStream | null
   mediaStatus: string
@@ -55,8 +57,14 @@ function CameraTile({
   stageRef: RefObject<HTMLDivElement | null>
   variant?: 'floating' | 'docked'
   defaultCorner?: 'top-center' | 'top-right' | 'bottom-right'
+  /** Separate storage per anchor so top-center thesis layout is not overridden by salary top-right drags. */
+  posStorageKey?: string
 }) {
   const docked = variant === 'docked'
+  const storageKey =
+    posStorageKey ??
+    (defaultCorner === 'top-center' ? CAM_TILE_POS_TOP_CENTER_KEY : CAM_TILE_POS_KEY)
+  const anchorTopCenter = !docked && defaultCorner === 'top-center'
   const tileRef = useRef<HTMLDivElement>(null)
   const drag = useRef({ active: false, offX: 0, offY: 0 })
   const resize = useRef({ active: false, startX: 0, startW: 0 })
@@ -83,7 +91,7 @@ function CameraTile({
     const el = tileRef.current
     if (!stage || !el) return
     try {
-      const raw = sessionStorage.getItem(CAM_TILE_POS_KEY)
+      const raw = sessionStorage.getItem(storageKey)
       if (raw) {
         const parsed = JSON.parse(raw) as { x: number; y: number }
         if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
@@ -102,7 +110,7 @@ function CameraTile({
         ? (stage.clientWidth - w) / 2
         : stage.clientWidth - w - 16
     setPos(clamp(x, y))
-  }, [defaultCorner, docked, pos, clamp, width, stageRef])
+  }, [defaultCorner, docked, pos, clamp, width, stageRef, storageKey])
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -160,26 +168,28 @@ function CameraTile({
   useEffect(() => {
     if (!pos || dragging) return
     try {
-      sessionStorage.setItem(CAM_TILE_POS_KEY, JSON.stringify(pos))
+      sessionStorage.setItem(storageKey, JSON.stringify(pos))
     } catch {
       /* ignore */
     }
-  }, [pos, dragging])
+  }, [pos, dragging, storageKey])
 
   const camOn = videoEnabled && mediaStatus === 'ready' && !!stream
 
   return (
     <div
       ref={tileRef}
-      className={`camtile ${docked ? 'camtile--docked' : ''} ${dragging ? 'is-dragging' : ''}`}
+      className={`camtile ${docked ? 'camtile--docked' : ''} ${anchorTopCenter ? 'camtile--anchor-top-center' : ''} ${dragging ? 'is-dragging' : ''}`}
       style={
         docked
           ? undefined
           : {
               width,
               ...(pos
-                ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' }
-                : { right: 16, top: 16, left: 'auto', bottom: 'auto' }),
+                ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto', transform: 'none' }
+                : anchorTopCenter
+                  ? { left: '50%', top: 16, right: 'auto', bottom: 'auto', transform: 'translateX(-50%)' }
+                  : { right: 16, top: 16, left: 'auto', bottom: 'auto' }),
             }
       }
     >
@@ -438,7 +448,7 @@ export function StudioLive({
               )}
             </div>
           )}
-          {showSpeakingRail && thesisFloatingCamera && (
+          {thesisFloatingCamera && (
             <CameraTile
               stream={stream}
               mediaStatus={mediaStatus}
@@ -447,6 +457,7 @@ export function StudioLive({
               videoRef={videoRef}
               stageRef={stageRef}
               defaultCorner="top-center"
+              posStorageKey={CAM_TILE_POS_TOP_CENTER_KEY}
             />
           )}
           <img className="stage-watermark" src="/brand/speakup-icon-white.png" alt="" aria-hidden="true" />
@@ -506,6 +517,8 @@ export function StudioLive({
               onToggleVideo={onToggleVideo}
               videoRef={videoRef}
               stageRef={stageRef}
+              defaultCorner={isThesis ? 'top-center' : 'top-right'}
+              posStorageKey={isThesis ? CAM_TILE_POS_TOP_CENTER_KEY : undefined}
             />
           )}
         </div>
