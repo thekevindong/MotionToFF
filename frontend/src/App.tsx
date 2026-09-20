@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -6,196 +6,258 @@ const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 type HealthState =
   | { status: 'loading' }
   | { status: 'ok' }
-  | { status: 'error'; message: string }
+  | { status: 'error' }
 
-type InterviewerLine = { role: string; text: string }
-
-type RubricScores = {
-  structure: number
-  specificity: number
-  confidence: number
-  evidence: string[]
-  red_flags: string[]
-  overall: number
-}
-
-type DirectorDecision = {
-  action: string
-  rationale: string
-  input_snapshot: Record<string, unknown>
-}
-
-type TurnResult = {
-  scores: RubricScores
-  decision: DirectorDecision
-  next_question: InterviewerLine
-}
-
-type CompletedTurn = TurnResult & { answer: string; question: string }
-
-function App() {
+function useBackendHealth(): HealthState {
   const [health, setHealth] = useState<HealthState>({ status: 'loading' })
-  const [currentQuestion, setCurrentQuestion] = useState<InterviewerLine | null>(
-    null,
-  )
-  const [answer, setAnswer] = useState('')
-  const [completedTurns, setCompletedTurns] = useState<CompletedTurn[]>([])
-  const [submitting, setSubmitting] = useState(false)
-  const [turnError, setTurnError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-
-    async function bootstrap() {
+    async function check() {
       try {
-        const [healthRes, sessionRes] = await Promise.all([
-          fetch(`${API_BASE}/health`),
-          fetch(`${API_BASE}/session`),
-        ])
-        if (!healthRes.ok) {
-          throw new Error(`Health HTTP ${healthRes.status}`)
-        }
-        const healthData: { ok?: boolean } = await healthRes.json()
-        if (!healthData.ok) {
-          throw new Error('Health check returned ok: false')
-        }
-        if (!sessionRes.ok) {
-          throw new Error(`Session HTTP ${sessionRes.status}`)
-        }
-        const sessionData: { current_question: InterviewerLine } =
-          await sessionRes.json()
+        const res = await fetch(`${API_BASE}/health`)
+        const data: { ok?: boolean } = await res.json()
         if (!cancelled) {
-          setHealth({ status: 'ok' })
-          setCurrentQuestion(sessionData.current_question)
+          setHealth({ status: res.ok && data.ok ? 'ok' : 'error' })
         }
-      } catch (err) {
-        if (!cancelled) {
-          const message =
-            err instanceof Error ? err.message : 'Unknown error'
-          setHealth({ status: 'error', message })
-        }
+      } catch {
+        if (!cancelled) setHealth({ status: 'error' })
       }
     }
-
-    bootstrap()
+    void check()
     return () => {
       cancelled = true
     }
   }, [])
 
-  const submitAnswer = useCallback(async () => {
-    const trimmed = answer.trim()
-    if (!trimmed || !currentQuestion || submitting) {
-      return
-    }
+  return health
+}
 
-    setSubmitting(true)
-    setTurnError(null)
+const COMPOSURE_SIGNALS = [
+  { label: 'Pulse', unit: 'bpm', hint: 'Presage / SmartSpectra' },
+  { label: 'Breathing', unit: 'rpm', hint: 'camera vitals' },
+  { label: 'Expression', unit: '', hint: 'MediaPipe' },
+]
 
-    try {
-      const res = await fetch(`${API_BASE}/turn`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer: trimmed }),
-      })
-      if (!res.ok) {
-        const detail = await res.text()
-        throw new Error(detail || `HTTP ${res.status}`)
-      }
-      const data: TurnResult = await res.json()
-      setCompletedTurns((prev) => [
-        ...prev,
-        {
-          ...data,
-          answer: trimmed,
-          question: currentQuestion.text,
-        },
-      ])
-      setCurrentQuestion(data.next_question)
-      setAnswer('')
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Submit failed'
-      setTurnError(message)
-    } finally {
-      setSubmitting(false)
-    }
-  }, [answer, currentQuestion, submitting])
+const STEPS = [
+  {
+    n: '01',
+    title: 'Speak your answer',
+    body: 'One spoken question at a time, grounded in your role and resume. No typing, no chatbot back-and-forth.',
+  },
+  {
+    n: '02',
+    title: 'Get scored, silently',
+    body: 'A judge rates structure, specificity, confidence, and evidence — and flags red flags — without ever talking to you.',
+  },
+  {
+    n: '03',
+    title: 'The interview adapts',
+    body: 'A director reads your rubric scores and composure signal, then decides to press harder, follow up, or ease off.',
+  },
+]
+
+function Header({ health }: { health: HealthState }) {
+  return (
+    <header className="nav">
+      <div className="brand">
+        <span className="brand-mark" aria-hidden="true" />
+        <span className="brand-name">Composure</span>
+      </div>
+      <nav className="nav-links">
+        <a href="/diag">Diagnostic</a>
+        <a href="/report">Report</a>
+        <span
+          className={`status-dot status-dot--${health.status}`}
+          title={
+            health.status === 'ok'
+              ? 'Backend connected'
+              : health.status === 'error'
+                ? 'Backend unreachable'
+                : 'Checking backend'
+          }
+        >
+          <span className="status-dot__led" aria-hidden="true" />
+          {health.status === 'ok'
+            ? 'Ready'
+            : health.status === 'error'
+              ? 'Offline'
+              : 'Connecting'}
+        </span>
+      </nav>
+    </header>
+  )
+}
+
+function CameraStage() {
+  return (
+    <div className="stage">
+      <div className="camera" role="img" aria-label="Camera preview, currently off">
+        <div className="camera-frame">
+          <svg
+            className="camera-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M4 7.5A2.5 2.5 0 0 1 6.5 5h1.6a1 1 0 0 0 .82-.43l.76-1.14A1 1 0 0 1 10.5 3h3a1 1 0 0 1 .82.43l.76 1.14a1 1 0 0 0 .82.43h1.6A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Z"
+              stroke="currentColor"
+              strokeWidth="1.4"
+            />
+            <circle cx="12" cy="12" r="3.4" stroke="currentColor" strokeWidth="1.4" />
+          </svg>
+          <p className="camera-title">Camera preview</p>
+          <p className="camera-sub">
+            Vitals read from your webcam. Nothing is recording yet.
+          </p>
+        </div>
+
+        <div className="camera-badges" aria-hidden="true">
+          <span className="pill pill--muted">
+            <span className="pill-led" />
+            Camera off
+          </span>
+          <span className="pill pill--muted">
+            <span className="pill-led" />
+            Mic off
+          </span>
+        </div>
+      </div>
+
+      <div className="stage-actions">
+        <button type="button" className="btn btn-primary" disabled>
+          Start session
+        </button>
+        <button type="button" className="btn btn-ghost" disabled>
+          Enable camera &amp; mic
+        </button>
+      </div>
+      <p className="stage-note">
+        Grant camera and microphone access to begin. Controls activate once a
+        session is configured.
+      </p>
+    </div>
+  )
+}
+
+function SetupPanel() {
+  return (
+    <aside className="setup">
+      <section className="card">
+        <h2 className="card-title">Session setup</h2>
+        <p className="card-sub">Optional context sharpens every question.</p>
+
+        <label className="field">
+          <span className="field-label">Job title</span>
+          <input
+            className="field-input"
+            type="text"
+            placeholder="e.g. Senior Product Manager"
+            disabled
+          />
+        </label>
+
+        <div className="field">
+          <span className="field-label">Resume</span>
+          <div className="dropzone" role="group" aria-label="Resume upload">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="drop-icon">
+              <path
+                d="M12 16V4m0 0 4 4m-4-4-4 4"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4 15v2.5A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V15"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+              />
+            </svg>
+            <p className="drop-title">Drop your resume</p>
+            <p className="drop-sub">PDF or DOCX · optional</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2 className="card-title">Composure</h2>
+          <span className="pill pill--muted">
+            <span className="pill-led" />
+            Awaiting signal
+          </span>
+        </div>
+        <ul className="signals">
+          {COMPOSURE_SIGNALS.map((s) => (
+            <li key={s.label} className="signal">
+              <div className="signal-ring" aria-hidden="true">
+                <span className="signal-value">—</span>
+              </div>
+              <div className="signal-meta">
+                <span className="signal-label">{s.label}</span>
+                <span className="signal-hint">
+                  {s.unit ? `${s.unit} · ` : ''}
+                  {s.hint}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <div className="composure-bar" aria-hidden="true">
+          <div className="composure-bar__track" />
+        </div>
+        <p className="card-foot">
+          A single 0–1 composure signal, timelined across the session.
+        </p>
+      </section>
+    </aside>
+  )
+}
+
+function App() {
+  const health = useBackendHealth()
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Practice Interview</h1>
-        <p className="muted">
-          <a href="/diag">Media diagnostic (/diag)</a>
-          {' · '}
-          <a href="/report">Session report (/report)</a>
-        </p>
-        {health.status === 'loading' && <p className="muted">Checking backend…</p>}
-        {health.status === 'ok' && <p className="status-ok">backend ok</p>}
-      {health.status === 'error' && (
-        <p className="status-error">
-          Backend unreachable: {health.message}
-        </p>
-      )}
-      </header>
+    <div className="page">
+      <Header health={health} />
 
-      {health.status === 'ok' && currentQuestion && (
-        <section className="interview-panel">
-          <h2>Interviewer</h2>
-          <p className="interviewer-line">{currentQuestion.text}</p>
-
-          <label className="answer-label" htmlFor="answer">
-            Your answer
-          </label>
-          <textarea
-            id="answer"
-            className="answer-input"
-            rows={5}
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            placeholder="Type your answer…"
-            disabled={submitting}
-          />
-
-          <button
-            type="button"
-            className="submit-btn"
-            onClick={submitAnswer}
-            disabled={submitting || !answer.trim()}
-          >
-            {submitting ? 'Scoring…' : 'Submit answer'}
-          </button>
-
-          {turnError && <p className="status-error">{turnError}</p>}
+      <main className="shell">
+        <section className="hero">
+          <span className="eyebrow">AI interview coach</span>
+          <h1 className="hero-title">
+            Practice interviews that watch your composure, not just your answers.
+          </h1>
+          <p className="hero-lede">
+            A directed mock interview: one spoken question at a time, scored on
+            substance and steadied by camera vitals — so you can see exactly
+            where you crack, and fix it.
+          </p>
         </section>
-      )}
 
-      {completedTurns.length > 0 && (
-        <section className="turn-history">
-          <h2>Turn feedback</h2>
-          <ul className="turn-list">
-            {[...completedTurns].reverse().map((turn, index) => (
-              <li key={`${turn.question}-${completedTurns.length - index}`}>
-                <p className="turn-meta">
-                  Turn {completedTurns.length - index} · decision:{' '}
-                  <strong>{turn.decision.action}</strong>
-                </p>
-                <p className="turn-scores">
-                  Scores — overall: {turn.scores.overall.toFixed(2)}, structure:{' '}
-                  {turn.scores.structure.toFixed(2)}, specificity:{' '}
-                  {turn.scores.specificity.toFixed(2)}, confidence:{' '}
-                  {turn.scores.confidence.toFixed(2)}
-                </p>
-                <p className="turn-rationale">{turn.decision.rationale}</p>
-                <p className="turn-next">
-                  Next: {turn.next_question.text}
-                </p>
-              </li>
-            ))}
-          </ul>
+        <section className="console">
+          <CameraStage />
+          <SetupPanel />
         </section>
-      )}
-    </main>
+
+        <section className="steps">
+          {STEPS.map((step) => (
+            <article key={step.n} className="step">
+              <span className="step-n">{step.n}</span>
+              <h3 className="step-title">{step.title}</h3>
+              <p className="step-body">{step.body}</p>
+            </article>
+          ))}
+        </section>
+      </main>
+
+      <footer className="foot">
+        <span>Composure</span>
+        <span className="foot-dim">SteelHacks XIII · practice that watches composure</span>
+      </footer>
+    </div>
   )
 }
 
