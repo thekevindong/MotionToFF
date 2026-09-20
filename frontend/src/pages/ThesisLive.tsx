@@ -15,7 +15,7 @@ import { presageStatusLabel, usePresageMetrics } from '../hooks/use-presage-metr
 import { usePresageVitals } from '../hooks/use-presage-vitals'
 import type { ThesisPresentationFlow } from '../hooks/use-thesis-session'
 import { useThesisPresentationSession } from '../hooks/use-thesis-session'
-import { getSessionReport, getVoiceStatus, postThesisQaStart, postTurn } from '../lib/api'
+import { getSession, getSessionReport, getVoiceStatus, postThesisQaStart, postTurn } from '../lib/api'
 import type { ThesisPrepareResponse, ThesisPresentationCompleteResponse, TurnResponse } from '../lib/api-types'
 import { getStoredSessionId } from '../lib/session-storage'
 import { setSession } from '../session'
@@ -95,6 +95,10 @@ export function ThesisLive({
   const [generatingReport, setGeneratingReport] = useState(false)
   const sessionClosingRef = useRef(false)
   const handoffPlayedRef = useRef(false)
+  const restoredQaEntryRef = useRef(
+    prep.thesis_phase === 'qa' && prep.source === 'session',
+  )
+  const restoredQuestionPlayedRef = useRef(false)
 
   const [statsOpen, setStatsOpen] = useState(true)
   const [micOn, setMicOn] = useState(true)
@@ -150,25 +154,46 @@ export function ThesisLive({
     onNavigateResults()
   }, [mode.title, onNavigateResults, prep.presentation_duration_sec])
 
-  const beginQa = useCallback(async (result: ThesisPresentationCompleteResponse) => {
-    setHandoffLine(result.handoff_line?.trim() || "Thank you. Let's move to questions about your work.")
+  const bootstrapQa = useCallback(async (handoff?: string | null) => {
     setSessionPhase('qa')
     handoffPlayedRef.current = false
+    setQaStarted(true)
+    setQaAnswersCompleted(0)
+    setQaElapsedSec(0)
     const sessionId = getStoredSessionId()
     if (!sessionId) {
+      setQaStarted(false)
       setTurnError('Missing session — return to prep.')
       return
     }
     try {
+      if (restoredQaEntryRef.current) {
+        handoffPlayedRef.current = true
+      }
       const start = await postThesisQaStart(sessionId)
-      setCurrentQuestion(start.question.text)
-      setAiCaption(start.question.text)
-      setQaStarted(true)
-      setQaAnswersCompleted(0)
+      const questionText = start.question.text?.trim()
+      if (!questionText) {
+        throw new Error('Committee returned an empty question — try again.')
+      }
+      if (handoff !== undefined) {
+        setHandoffLine(handoff?.trim() || "Thank you. Let's move to questions about your work.")
+      }
+      setCurrentQuestion(questionText)
+      setAiCaption(questionText)
+      setTurnError(null)
     } catch (err) {
+      setQaStarted(false)
+      setSessionPhase('presentation')
       setTurnError(err instanceof Error ? err.message : 'Could not start Q&A')
     }
   }, [])
+
+  const beginQa = useCallback(
+    async (result: ThesisPresentationCompleteResponse) => {
+      await bootstrapQa(result.handoff_line ?? null)
+    },
+    [bootstrapQa],
+  )
 
   const {
     flow: presentationFlow,
@@ -208,6 +233,31 @@ export function ThesisLive({
     characterId: null,
     voiceGender: handoffVoiceGender,
   })
+
+  useEffect(() => {
+    if (prep.thesis_phase !== 'qa' || prep.source !== 'session' || qaStarted) return
+    void bootstrapQa(null)
+  }, [bootstrapQa, prep.source, prep.thesis_phase, qaStarted])
+
+  useEffect(() => {
+    if (prep.thesis_phase !== 'qa' || prep.source !== 'session' || !qaStarted) return
+    const sessionId = getStoredSessionId()
+    if (!sessionId) return
+    void (async () => {
+      try {
+        const data = await getSession(sessionId)
+        const qaTurns = Math.max(0, (data.turns?.length ?? 1) - 1)
+        setQaAnswersCompleted(qaTurns)
+        const q = data.current_question?.text?.trim()
+        if (q) {
+          setCurrentQuestion(q)
+          setAiCaption(q)
+        }
+      } catch {
+        /* handoff effect will still play if currentQuestion was set by bootstrap */
+      }
+    })()
+  }, [prep.source, prep.thesis_phase, qaStarted])
 
   const askCommittee = useCallback(
     (
@@ -381,6 +431,7 @@ export function ThesisLive({
   )
 
   useEffect(() => {
+    if (restoredQaEntryRef.current) return
     if (sessionPhase !== 'qa' || !qaStarted || !currentQuestion || handoffPlayedRef.current) return
     if (qaState !== 'IDLE') return
     if (sessionClosingRef.current) return
@@ -405,6 +456,25 @@ export function ThesisLive({
     currentQuestion,
     handoffLine,
     handoffVoiceGender,
+    listen,
+    qaStarted,
+    qaState,
+    sessionPhase,
+  ])
+
+  useEffect(() => {
+    if (!restoredQaEntryRef.current) return
+    if (sessionPhase !== 'qa' || !qaStarted || !currentQuestion.trim()) return
+    if (restoredQuestionPlayedRef.current || sessionClosingRef.current) return
+    if (qaState !== 'IDLE') return
+    restoredQuestionPlayedRef.current = true
+    askCommittee(currentQuestion, {
+      voiceGender: randomCommitteeVoice(),
+      onSpoken: () => listen(),
+    })
+  }, [
+    askCommittee,
+    currentQuestion,
     listen,
     qaStarted,
     qaState,
@@ -543,7 +613,8 @@ export function ThesisLive({
 
   const stageUserCaption = qaUserCaptionFloor ? userCaption : lingeringUserCaption
   const captionPriority: 'user' | 'ai' =
-    presenting || (sessionPhase === 'qa' && (showQaUserCaptions || userAnswerCaptionHold))
+    (presenting && Boolean(userCaption.trim())) ||
+    (sessionPhase === 'qa' && (showQaUserCaptions || userAnswerCaptionHold))
       ? 'user'
       : 'ai'
 
@@ -575,9 +646,15 @@ export function ThesisLive({
         })}
         opponentImg=""
         stageBackgroundSrc={stageBackgroundSrc}
-        aiCaptionLine={sessionPhase === 'qa' ? aiCaption ?? currentQuestion : null}
+        aiCaptionLine={
+          sessionPhase === 'qa' && (aiCaption ?? currentQuestion)
+            ? aiCaption ?? currentQuestion
+            : null
+        }
         userCaption={presenting ? userCaption : showQaUserCaptions ? stageUserCaption : ''}
-        userCaptionsEnabled={presenting || showQaUserCaptions}
+        userCaptionsEnabled={
+          (presenting && Boolean(userCaption.trim())) || showQaUserCaptions
+        }
         captionPriority={captionPriority}
         displayError={displayError}
         voiceHint={restartNote ?? voiceHint}

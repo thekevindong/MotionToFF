@@ -191,6 +191,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const mode = MODES.find((m) => m.id === modeId) ?? null
   const isSpeakingMode = mode?.id === 'speaking'
   const isThesisMode = mode?.id === 'thesis'
+  /** Thesis/Speaking use their own live shells — parent Setup must not run salary session time-up. */
+  const dedicatedLiveSession =
+    studioPhase === 'live' &&
+    ((isThesisMode && Boolean(thesisPrep)) || (isSpeakingMode && Boolean(speakingPrep)))
   const character = SALARY_CHARACTERS.find((c) => c.id === charId) ?? null
   const thesisCharacter =
     isThesisMode && thesisPrep
@@ -676,13 +680,13 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }, [state])
 
   useEffect(() => {
-    if (!started) {
-      sessionTimeUpHandledRef.current = false
+    if (!started || dedicatedLiveSession) {
+      if (!started) sessionTimeUpHandledRef.current = false
       return
     }
     const id = window.setInterval(() => setSeconds((s) => s + 1), 1000)
     return () => window.clearInterval(id)
-  }, [started])
+  }, [dedicatedLiveSession, started])
 
   useEffect(() => {
     secondsRef.current = seconds
@@ -1127,18 +1131,25 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   playTimedSessionCloseRef.current = playTimedSessionClose
 
   useEffect(() => {
-    if (!started || sessionDurationSec <= 0) return
+    if (dedicatedLiveSession || !started || sessionDurationSec <= 0) return
     if (seconds < sessionDurationSec) return
     if (sessionTimeUpHandledRef.current || sessionTimeUpPending) return
     setSessionTimeUpPending(true)
-  }, [seconds, sessionDurationSec, started, sessionTimeUpPending])
+  }, [dedicatedLiveSession, seconds, sessionDurationSec, started, sessionTimeUpPending])
 
   useEffect(() => {
-    if (!sessionTimeUpPending || sessionClosingRef.current) return
+    if (dedicatedLiveSession || !sessionTimeUpPending || sessionClosingRef.current) return
     if (state === 'THINKING' || transcribing) return
     if (state === 'ASKING' && speakingPhase !== 'idle') return
     void playTimedSessionClose()
-  }, [sessionTimeUpPending, state, speakingPhase, transcribing, playTimedSessionClose])
+  }, [
+    dedicatedLiveSession,
+    sessionTimeUpPending,
+    state,
+    speakingPhase,
+    transcribing,
+    playTimedSessionClose,
+  ])
 
   const leaveStudio = () => {
     if (sessionLive) {
