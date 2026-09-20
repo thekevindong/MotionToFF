@@ -48,6 +48,20 @@ import { StudioLive } from './StudioLive'
 import { StudioPrep } from './StudioPrep'
 import './Setup.css'
 
+type BrowserSpeechApi = {
+  getTranscript: () => string
+  getLiveCaption: () => string
+  reset: () => void
+  stop: () => void
+}
+
+/** Best-effort user text from browser captions (used when cloud audio capture is empty). */
+function browserCaptionAnswer(api: Pick<BrowserSpeechApi, 'getTranscript' | 'getLiveCaption'>): string {
+  const live = api.getLiveCaption().trim()
+  const final = api.getTranscript().trim()
+  return live || final
+}
+
 const CONTEXT_FILE_EXT = new Set(['.pdf', '.docx', '.txt'])
 
 function turnRequestsReportEnd(data: TurnResponse): boolean {
@@ -108,6 +122,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const stageRef = useRef<HTMLDivElement>(null)
   const [userCaption, setUserCaption] = useState('')
   const [lingeringUserCaption, setLingeringUserCaption] = useState('')
+  const lingeringUserCaptionRef = useRef('')
   const [userUtteranceActive, setUserUtteranceActive] = useState(false)
   const [interjectionCaption, setInterjectionCaption] = useState<string | null>(null)
   const [lastInterjectionTrigger, setLastInterjectionTrigger] = useState<InterjectTrigger | null>(null)
@@ -240,12 +255,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const manualSubmitRef = useRef(false)
   const stateRef = useRef<TurnState>('IDLE')
   const speakingPhaseRef = useRef<'idle' | 'loading' | 'audible'>('idle')
-  const browserSpeechApiRef = useRef<{
-    getTranscript: () => string
-    reset: () => void
-    stop: () => void
-  }>({
+  const browserSpeechApiRef = useRef<BrowserSpeechApi>({
     getTranscript: () => '',
+    getLiveCaption: () => '',
     reset: () => {},
     stop: () => {},
   })
@@ -309,12 +321,16 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         })
         text = result.transcript
         markCloudSttSuccess()
+        if (!text.trim()) {
+          const fallback = browserCaptionAnswer(browserSpeechApiRef.current)
+          if (fallback) text = fallback
+        }
       } catch (err) {
         sttFailed = true
         const message = err instanceof Error ? err.message : 'Transcription failed'
         pauseCloudSttAfterFailure()
         setTurnError(message)
-        const fallback = browserSpeechApiRef.current.getTranscript()
+        const fallback = browserCaptionAnswer(browserSpeechApiRef.current)
         if (fallback) {
           text = fallback
           sttFailed = false
@@ -322,9 +338,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       } finally {
         setTranscribing(false)
       }
+      const captionBeforeStop = browserCaptionAnswer(browserSpeechApiRef.current)
       browserSpeechApiRef.current.stop()
-      const linger =
-        browserSpeechApiRef.current.getTranscript().trim() || text.trim()
+      const linger = captionBeforeStop || text.trim()
       if (linger) setLingeringUserCaption(linger)
       browserSpeechApiRef.current.reset()
       setUserCaption('')
@@ -385,6 +401,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const browserSpeech = useBrowserSpeechCapture(browserListenActive)
   browserSpeechApiRef.current = {
     getTranscript: browserSpeech.getTranscript,
+    getLiveCaption: browserSpeech.getLiveCaption,
     reset: browserSpeech.reset,
     stop: browserSpeech.stop,
   }
@@ -420,7 +437,14 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         return
       }
       if (!hadRecording) {
-        await processTurnAnswerRef.current('', manual)
+        browserSpeech.stop()
+        const text =
+          browserCaptionAnswer(browserSpeech) || lingeringUserCaptionRef.current.trim()
+        const live = text.trim()
+        if (live) setLingeringUserCaption(live)
+        browserSpeech.reset()
+        setUserCaption('')
+        await processTurnAnswerRef.current(text, manual)
         manualSubmitRef.current = false
         return
       }
@@ -571,8 +595,19 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }, [sessionTimeUpPending])
 
   useEffect(() => {
+    lingeringUserCaptionRef.current = lingeringUserCaption
+  }, [lingeringUserCaption])
+
+  useEffect(() => {
     setMicEnabled(micOn)
   }, [micOn, setMicEnabled])
+
+  useEffect(() => {
+    if (micOn || state !== 'LISTENING') return
+    const preserved = browserCaptionAnswer(browserSpeechApiRef.current)
+    if (preserved) setLingeringUserCaption(preserved)
+    setUserUtteranceActive(false)
+  }, [micOn, state])
 
   useEffect(() => {
     setVideoEnabled(videoOn)
