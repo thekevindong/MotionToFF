@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -128,12 +129,23 @@ def _extra_request_fields() -> dict[str, Any]:
     return {"chat_template_kwargs": {"enable_thinking": False}}
 
 
+def _http_timeout(explicit: float | None) -> float:
+    if explicit is not None and explicit > 0:
+        return explicit
+    raw = os.getenv("NEMOTRON_HTTP_TIMEOUT", "60").strip()
+    try:
+        return max(5.0, float(raw))
+    except ValueError:
+        return 60.0
+
+
 def chat_completion(
     messages: list[dict[str, str]],
     *,
     temperature: float = 0.2,
     max_tokens: int = 1024,
     response_format: dict[str, Any] | None = None,
+    timeout: float | None = None,
 ) -> str:
     api_key = os.getenv("NEMOTRON_API_KEY", "").strip()
     if not api_key:
@@ -160,8 +172,10 @@ def chat_completion(
         method="POST",
     )
 
+    req_timeout = _http_timeout(timeout)
+    started = time.perf_counter()
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=req_timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -173,12 +187,21 @@ def chat_completion(
                 headers=request.headers,
                 method="POST",
             )
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=req_timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         else:
             raise RuntimeError(f"Nemotron HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Nemotron request failed: {exc.reason}") from exc
+
+    elapsed = time.perf_counter() - started
+    logger.info(
+        "Nemotron chat_completion %.1fs (timeout=%ss, max_tokens=%s, model=%s)",
+        elapsed,
+        req_timeout,
+        max_tokens,
+        _model(),
+    )
 
     return _extract_message_text(payload)
 
@@ -199,6 +222,7 @@ def chat_json_object(
     temperature: float = 0.2,
     max_tokens: int = 1024,
     response_format: dict[str, Any] | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     fmt = response_format if response_format is not None else _json_response_format()
     try:
@@ -207,6 +231,7 @@ def chat_json_object(
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=fmt,
+            timeout=timeout,
         )
     except RuntimeError as exc:
         # Some hosted models reject response_format; retry once without it.
@@ -217,6 +242,7 @@ def chat_json_object(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=None,
+                timeout=timeout,
             )
         else:
             raise
@@ -234,6 +260,7 @@ def chat_json_object(
                 temperature=min(temperature, 0.1),
                 max_tokens=max(max_tokens, 1024),
                 response_format=fmt,
+                timeout=timeout,
             )
             return parse_json_object(retry_text)
         except (json.JSONDecodeError, ValueError, RuntimeError) as retry_exc:

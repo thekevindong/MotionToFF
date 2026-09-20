@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
+import time
 from typing import Any
 
 from nemotron_client import chat_json_object, nemotron_configured
@@ -136,26 +139,142 @@ def score(answer: str) -> RubricScores:
         return _mock_score(answer)
 
 
-def _mock_session_report(
-    turns: list[dict[str, Any]], *, fallback: bool = False
-) -> dict[str, Any]:
-    per_turn: list[dict[str, Any]] = []
-    for row in turns:
-        rubric = _mock_score(str(row.get("answer", "")))
-        per_turn.append({"turn": row["turn"], **rubric})
-    agg = _normalize_rubric(
+def _score_turn_presage(answer: str, composure: float) -> RubricScores:
+    """Presage-style heuristic rubric from answer text + stored turn composure."""
+    trimmed = answer.strip()
+    words = len(trimmed.split()) if trimmed else 0
+    comp = _clamp01(composure, 0.5)
+
+    if not trimmed:
+        return _normalize_rubric(
+            {
+                "structure": 0.2,
+                "specificity": 0.15,
+                "confidence": comp * 0.5,
+                "evidence": [],
+                "red_flags": ["empty_or_too_short"],
+                "overall": 0.18,
+            },
+            mock=True,
+        )
+
+    has_number = bool(re.search(r"\d", trimmed))
+    structure = _clamp01(0.42 + min(words, 100) / 140 + comp * 0.22)
+    specificity = _clamp01(0.38 + min(words, 90) / 110 + (0.12 if has_number else 0))
+    confidence = _clamp01(comp * 0.85 + min(words, 60) / 200)
+
+    evidence: list[str] = []
+    if words >= 35:
+        evidence.append("Answer had enough depth to follow your reasoning")
+    if comp >= 0.72:
+        evidence.append("Composure read as steady on this turn")
+    if has_number:
+        evidence.append("Used concrete figures or metrics")
+
+    red_flags: list[str] = []
+    if words < 12:
+        red_flags.append("very_brief_answer")
+    if comp < 0.4:
+        red_flags.append("low_composure_on_turn")
+
+    overall = _clamp01((structure + specificity + confidence) / 3)
+    return _normalize_rubric(
         {
-            "structure": 0.74,
-            "specificity": 0.68,
-            "confidence": 0.72,
-            "evidence": ["Session completed with multiple answers"],
-            "red_flags": [],
-            "overall": 0.71,
+            "structure": structure,
+            "specificity": specificity,
+            "confidence": confidence,
+            "evidence": evidence[:3],
+            "red_flags": red_flags,
+            "overall": overall,
         },
         mock=True,
     )
-    source = "mock_fallback" if fallback else "mock"
-    return {"rubric": agg, "per_turn": per_turn, "mock": True, "source": source, "fallback": fallback}
+
+
+def _presage_session_report(
+    turns: list[dict[str, Any]], *, fallback: bool = False
+) -> dict[str, Any]:
+    """Baseline session report from turn composure + answer heuristics (no Nemotron)."""
+    per_turn: list[dict[str, Any]] = []
+    structure_vals: list[float] = []
+    specificity_vals: list[float] = []
+    confidence_vals: list[float] = []
+    overall_vals: list[float] = []
+    session_evidence: list[str] = []
+    session_flags: list[str] = []
+
+    for row in turns:
+        comp = row.get("composure")
+        comp_f = float(comp) if isinstance(comp, (int, float)) else 0.5
+        rubric = _score_turn_presage(str(row.get("answer", "")), comp_f)
+        per_turn.append({"turn": row["turn"], **rubric})
+        structure_vals.append(rubric["structure"])
+        specificity_vals.append(rubric["specificity"])
+        confidence_vals.append(rubric["confidence"])
+        overall_vals.append(rubric["overall"])
+        for line in rubric.get("evidence", []):
+            if line not in session_evidence and len(session_evidence) < 5:
+                session_evidence.append(line)
+        for line in rubric.get("red_flags", []):
+            if line not in session_flags and len(session_flags) < 5:
+                session_flags.append(line)
+
+    def _avg(vals: list[float]) -> float:
+        return sum(vals) / len(vals) if vals else 0.5
+
+    agg = _normalize_rubric(
+        {
+            "structure": _avg(structure_vals),
+            "specificity": _avg(specificity_vals),
+            "confidence": _avg(confidence_vals),
+            "evidence": session_evidence
+            or ["Session completed — scores derived from delivery signals and answers"],
+            "red_flags": session_flags,
+            "overall": _avg(overall_vals),
+        },
+        mock=True,
+    )
+    source = "presage_fallback" if fallback else "presage"
+    return {
+        "rubric": agg,
+        "per_turn": per_turn,
+        "mock": True,
+        "source": source,
+        "fallback": fallback,
+    }
+
+
+def presage_session_report(
+    turns: list[dict[str, Any]], *, fallback: bool = False
+) -> dict[str, Any]:
+    """Public Presage baseline report (used when Nemotron is off or fails)."""
+    return _presage_session_report(turns, fallback=fallback)
+
+
+def _mock_session_report(
+    turns: list[dict[str, Any]], *, fallback: bool = False
+) -> dict[str, Any]:
+    return _presage_session_report(turns, fallback=fallback)
+
+
+def _transcript_clip(text: str, *, field: str) -> str:
+    """Keep Nemotron prompts smaller — long answers dominate latency and max_tokens."""
+    default_q, default_a = 320, 520
+    raw = os.getenv("NEMOTRON_TRANSCRIPT_QUESTION_CHARS", str(default_q)).strip()
+    try:
+        max_q = max(80, int(raw))
+    except ValueError:
+        max_q = default_q
+    raw = os.getenv("NEMOTRON_TRANSCRIPT_ANSWER_CHARS", str(default_a)).strip()
+    try:
+        max_a = max(120, int(raw))
+    except ValueError:
+        max_a = default_a
+    limit = max_q if field == "question" else max_a
+    trimmed = text.strip()
+    if len(trimmed) <= limit:
+        return trimmed
+    return trimmed[: limit - 3].rstrip() + "..."
 
 
 def _session_transcript_block(turns: list[dict[str, Any]], job_title: str | None) -> str:
@@ -163,8 +282,8 @@ def _session_transcript_block(turns: list[dict[str, Any]], job_title: str | None
     if job_title:
         lines.append(f"Role / context: {job_title}")
     for row in turns:
-        q = str(row.get("question", "")).strip()
-        a = str(row.get("answer", "")).strip()
+        q = _transcript_clip(str(row.get("question", "")), field="question")
+        a = _transcript_clip(str(row.get("answer", "")), field="answer")
         comp = row.get("composure")
         comp_note = f" (composure {comp:.2f})" if isinstance(comp, (int, float)) else ""
         if q:
@@ -191,13 +310,26 @@ def _nemotron_session_report(turns: list[dict[str, Any]], job_title: str | None)
         f"Composure summary: {composure_summary}\n\n"
         f"Transcript:\n{transcript}"
     )
+    session_timeout_raw = os.getenv("NEMOTRON_SESSION_TIMEOUT", "28").strip()
+    try:
+        session_timeout = max(8.0, float(session_timeout_raw))
+    except ValueError:
+        session_timeout = 28.0
+
+    started = time.perf_counter()
     raw = chat_json_object(
         [
             {"role": "system", "content": SESSION_JUDGE_SYSTEM},
             {"role": "user", "content": user_content},
         ],
         temperature=0.15,
-        max_tokens=2048,
+        max_tokens=1536,
+        timeout=session_timeout,
+    )
+    logger.info(
+        "Nemotron session judge completed in %.1fs (%s turns, model via NEMOTRON_MODEL)",
+        time.perf_counter() - started,
+        len(turns),
     )
     per_turn_raw = raw.get("per_turn")
     per_turn: list[dict[str, Any]] = []
@@ -215,6 +347,22 @@ def _nemotron_session_report(turns: list[dict[str, Any]], job_title: str | None)
             per_turn.append({"turn": turn_idx, **rubric})
 
     rubric = _normalize_rubric(raw, mock=False)
+    if len(turns) > 0 and len(per_turn) < len(turns):
+        have = {int(p["turn"]) for p in per_turn if "turn" in p}
+        logger.warning(
+            "Nemotron session judge returned %s/%s per_turn rows; filling gaps with Presage heuristics",
+            len(per_turn),
+            len(turns),
+        )
+        for row in turns:
+            idx = int(row.get("turn", 0))
+            if idx < 1 or idx in have:
+                continue
+            comp = row.get("composure")
+            comp_f = float(comp) if isinstance(comp, (int, float)) else 0.5
+            gap = _score_turn_presage(str(row.get("answer", "")), comp_f)
+            per_turn.append({"turn": idx, **gap})
+        per_turn.sort(key=lambda item: int(item.get("turn", 0)))
     return {
         "rubric": rubric,
         "per_turn": per_turn,
@@ -242,13 +390,13 @@ def score_session(session_id: str) -> dict[str, Any]:
     job_title = (row.get("job_title") or "").strip() if row else None
 
     if not nemotron_configured():
-        return _mock_session_report(turns, fallback=False)
+        return _presage_session_report(turns, fallback=False)
 
     try:
         return _nemotron_session_report(turns, job_title or None)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Nemotron session judge failed, using mock: %s", exc)
-        return _mock_session_report(turns, fallback=True)
+        logger.warning("Nemotron session judge failed, using Presage baseline: %s", exc)
+        return _presage_session_report(turns, fallback=True)
 
 
 def apply_session_report_to_turns(

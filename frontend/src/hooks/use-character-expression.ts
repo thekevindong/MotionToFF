@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { InterjectTrigger } from '../config/composure-thresholds'
+import type { DeliveryMood, InterjectTrigger } from '../config/composure-thresholds'
 import type { SpeakingPhase } from './use-interview-machine'
 import type { TurnState } from '../lib/contracts'
 import {
@@ -25,6 +25,7 @@ export function useCharacterExpression(
   lastDirector: DirectorSignal | null,
   speakingPhase: SpeakingPhase = 'idle',
   lastInterjection: InterjectTrigger | null = null,
+  deliveryMood: DeliveryMood = 'neutral',
 ) {
   const [mood, setMood] = useState<ExpressionMood>('neutral')
   const [frame, setFrame] = useState(0)
@@ -45,6 +46,14 @@ export function useCharacterExpression(
     sternHoldRef.current = 3
     softStreakRef.current = 0
   }, [lastInterjection])
+
+  useEffect(() => {
+    if (sternHoldRef.current > 0 || lastInterjection) return
+    if (deliveryMood === 'pleased' && sessionActive) {
+      setMood('neutral')
+      setFrame(0)
+    }
+  }, [deliveryMood, lastInterjection, sessionActive])
 
   useEffect(() => {
     if (!lastDirector?.action) return

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 
-import type { InterjectTrigger } from '../config/composure-thresholds'
+import type { DeliveryMood, InterjectTrigger } from '../config/composure-thresholds'
 import { interjectThresholdsForSession } from '../config/composure-thresholds'
 import type { ComposureSample } from '../lib/contracts'
 import type { PresageVitalsSnapshot } from './use-presage-vitals'
@@ -12,6 +12,8 @@ type Snapshot = {
   composure: number
   stress: number
   hr_bpm?: number | null
+  eye_contact?: number | null
+  pace_wpm?: number | null
   source: string
 }
 
@@ -23,28 +25,50 @@ type Pending = {
 function pickTrigger(
   sample: ComposureSample,
   vitals: PresageVitalsSnapshot,
+  speechWpm: number | null,
   devForce: boolean,
 ): InterjectTrigger | null {
   const thresholds = interjectThresholdsForSession()
   const stress = sample.signals?.expression?.stress ?? 0
   const composure = sample.composure
+  const engagement = sample.signals?.engagement ?? null
 
   if (devForce) return 'high_stress'
+  if (speechWpm != null && speechWpm >= thresholds.paceFastWpm) return 'pace_fast'
   if (stress >= thresholds.stressHigh) return 'high_stress'
   if (composure <= thresholds.composureLow) return 'composure_low'
+  if (engagement !== null && engagement < thresholds.eyeContactLow) return 'low_eye_contact'
   if (vitals.pulse != null && vitals.pulse >= thresholds.hrElevated) return 'hr_elevated'
   return null
 }
 
-function buildSnapshot(sample: ComposureSample, vitals: PresageVitalsSnapshot): Snapshot {
+function pickPleasedMood(sample: ComposureSample): boolean {
+  const thresholds = interjectThresholdsForSession()
+  const stress = sample.signals?.expression?.stress ?? 1
+  const engagement = sample.signals?.engagement ?? 0
+  return (
+    sample.composure >= thresholds.composureStrong &&
+    engagement >= thresholds.eyeContactHigh &&
+    stress < 0.45
+  )
+}
+
+function buildSnapshot(
+  sample: ComposureSample,
+  vitals: PresageVitalsSnapshot,
+  speechWpm: number | null,
+): Snapshot {
   const stress = sample.signals?.expression?.stress ?? 0
-  let source = 'mediapipe'
+  const engagement = sample.signals?.engagement ?? null
+  let source = 'camera'
   if (vitals.sidecarReachable) source = 'sidecar'
   else if (!sample.signals?.faceRaw) source = 'speech_fallback'
   return {
     composure: sample.composure,
     stress,
     hr_bpm: vitals.pulse,
+    eye_contact: engagement,
+    pace_wpm: speechWpm,
     source,
   }
 }
@@ -56,9 +80,11 @@ interface Args {
   vitals: PresageVitalsSnapshot
   turnState: TurnState
   speakingPhase: SpeakingPhase
+  speechWpm: number | null
   devForceStress: boolean
   onInterjection: (text: string, trigger: InterjectTrigger) => void
   onInterjectionError?: (message: string) => void
+  onDeliveryMood?: (mood: DeliveryMood) => void
 }
 
 export function useComposureReactions({
@@ -68,14 +94,17 @@ export function useComposureReactions({
   vitals,
   turnState,
   speakingPhase,
+  speechWpm,
   devForceStress,
   onInterjection,
   onInterjectionError,
+  onDeliveryMood,
 }: Args) {
   const sustainedRef = useRef<{ trigger: InterjectTrigger | null; count: number }>({
     trigger: null,
     count: 0,
   })
+  const pleasedRef = useRef(0)
   const inFlightRef = useRef(false)
   const pendingRef = useRef<Pending | null>(null)
   const lastLocalFireRef = useRef(0)
@@ -126,13 +155,25 @@ export function useComposureReactions({
   useEffect(() => {
     if (!active || !sample || !sessionId) {
       sustainedRef.current = { trigger: null, count: 0 }
+      pleasedRef.current = 0
       pendingRef.current = null
+      onDeliveryMood?.('neutral')
       return
     }
 
     if (turnState === 'THINKING' || turnState === 'REPORT') return
 
-    const trigger = pickTrigger(sample, vitals, devForceStress)
+    if (pickPleasedMood(sample)) {
+      pleasedRef.current += 1
+      if (pleasedRef.current >= thresholds.pleasedSustainedSec) {
+        onDeliveryMood?.('pleased')
+      }
+    } else {
+      pleasedRef.current = 0
+      onDeliveryMood?.('neutral')
+    }
+
+    const trigger = pickTrigger(sample, vitals, speechWpm, devForceStress)
     if (!trigger) {
       sustainedRef.current = { trigger: null, count: 0 }
       return
@@ -147,14 +188,17 @@ export function useComposureReactions({
 
     if (sustainedRef.current.count !== thresholds.sustainedSec) return
 
-    const snapshot = buildSnapshot(sample, vitals)
+    const snapshot = buildSnapshot(sample, vitals, speechWpm)
     sustainedRef.current = { trigger: null, count: 0 }
     trySchedule({ trigger, snapshot })
   }, [
     active,
     devForceStress,
+    onDeliveryMood,
     sample,
     sessionId,
+    speechWpm,
+    thresholds.pleasedSustainedSec,
     thresholds.sustainedSec,
     trySchedule,
     turnState,

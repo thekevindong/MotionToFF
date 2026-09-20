@@ -1,4 +1,4 @@
-import type { SessionTurn } from './api-types'
+import type { RubricScores, SessionTurn } from './api-types'
 
 export type ReportMetric = {
   label: string
@@ -17,6 +17,70 @@ function avg(turns: SessionTurn[], pick: (t: SessionTurn) => number): number {
   if (turns.length === 0) return 0
   const sum = turns.reduce((acc, t) => acc + pick(t), 0)
   return sum / turns.length
+}
+
+function clamp01(value: number, fallback = 0.5): number {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
+
+/** Client-side Presage baseline when /report fails or scores are still pending. */
+export function scoreTurnPresage(answer: string, composure: number): RubricScores {
+  const trimmed = answer.trim()
+  const words = trimmed ? trimmed.split(/\s+/).length : 0
+  const comp = clamp01(composure)
+
+  if (!trimmed) {
+    return {
+      structure: 0.2,
+      specificity: 0.15,
+      confidence: comp * 0.5,
+      evidence: [],
+      red_flags: ['empty_or_too_short'],
+      overall: 0.18,
+      mock: true,
+    }
+  }
+
+  const hasNumber = /\d/.test(trimmed)
+  const structure = clamp01(0.42 + Math.min(words, 100) / 140 + comp * 0.22)
+  const specificity = clamp01(0.38 + Math.min(words, 90) / 110 + (hasNumber ? 0.12 : 0))
+  const confidence = clamp01(comp * 0.85 + Math.min(words, 60) / 200)
+
+  const evidence: string[] = []
+  if (words >= 35) evidence.push('Answer had enough depth to follow your reasoning')
+  if (comp >= 0.72) evidence.push('Composure read as steady on this turn')
+  if (hasNumber) evidence.push('Used concrete figures or metrics')
+
+  const red_flags: string[] = []
+  if (words < 12) red_flags.push('very_brief_answer')
+  if (comp < 0.4) red_flags.push('low_composure_on_turn')
+
+  const overall = clamp01((structure + specificity + confidence) / 3)
+  return {
+    structure,
+    specificity,
+    confidence,
+    evidence: evidence.slice(0, 3),
+    red_flags,
+    overall,
+    mock: true,
+  }
+}
+
+function turnNeedsPresageScores(turn: SessionTurn): boolean {
+  const pending = (turn.scores as RubricScores & { pending?: boolean }).pending
+  return Boolean(pending)
+}
+
+export function applyPresageScoresToTurns(turns: SessionTurn[]): SessionTurn[] {
+  return turns.map((turn) => {
+    if (!turnNeedsPresageScores(turn)) return turn
+    return {
+      ...turn,
+      scores: scoreTurnPresage(turn.answer, turn.composure),
+    }
+  })
 }
 
 export function computeOverallScore(turns: SessionTurn[]): number | null {

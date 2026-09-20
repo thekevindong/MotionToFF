@@ -35,7 +35,7 @@ Tone: strict and budget-conscious. Push back firmly on numbers, cite policy and 
 }
 
 SCENARIO_SALARY_ADDENDUM = """Scenario: salary negotiation for a job offer (not a generic behavioral interview).
-Focus on compensation expectations, justification, benefits, timing, and counters. After a brief acknowledgment, ask exactly ONE new negotiation question per turn."""
+Focus on compensation expectations, justification, benefits, timing, and counters. After a brief acknowledgment, ask exactly ONE new negotiation question per turn unless the negotiation is clearly finished — then close warmly with end_session true."""
 
 # Interactions API (recommended over legacy generateContent). See:
 # https://ai.google.dev/gemini-api/docs/interactions-overview
@@ -47,11 +47,11 @@ SETTINGS_OPENING_QUESTION_KEY = "cached_opening_question"
 
 History = list[dict[str, Any]]
 
-CONCISE_SPOKEN_RULES = """This is spoken aloud via TTS — every extra word costs time. Be terse and conversational.
-Hard limits:
-- First turn only: ask ONE opening question in at most 18 words. No greeting monologue.
-- Later turns: at most TWO short sentences and 28 words total — (1) a ≤8-word reaction that shows you listened, then (2) ONE question in ≤20 words.
-Skip filler ("Thanks for sharing", "That's a great point"). No bullet points, labels, or coaching."""
+CONCISE_SPOKEN_RULES = """This is spoken aloud via TTS — keep it concise but natural (not robotic).
+Guidelines:
+- First turn: one strong opening question in 1–2 sentences (about 25–40 words). Skip long greetings.
+- Later turns: one brief acknowledgment that you listened, then exactly ONE follow-up question (about 2–3 sentences, ~35–55 words total).
+Avoid filler lectures and coaching tone. No bullet points or section labels."""
 
 SYSTEM_INSTRUCTION = f"""You are Maya Chen, a professional interviewer in a live practice mock interview.
 
@@ -60,6 +60,10 @@ You own pacing and tone: push back when answers are vague, soften if they are st
 {CONCISE_SPOKEN_RULES}
 
 Never repeat a question already asked."""
+
+TURN_OUTPUT_JSON_RULES = """Output format: reply with ONLY a JSON object (no markdown fences), with keys:
+- "spoken": string — your in-character line for TTS (follow the length rules above)
+- "end_session": boolean — true ONLY when the practice should end now (e.g. salary terms agreed, clear mutual wrap-up, or mock interview goals satisfied). When true, "spoken" must be a warm closing with NO new question. Otherwise false."""
 
 CONTEXT_MAX_CHARS = 8000
 
@@ -70,10 +74,10 @@ SALARY_FIRST_TURN_INPUT = (
     "The candidate has joined the salary negotiation. Open with your first compensation-focused question."
 )
 FOLLOWUP_SUFFIX = (
-    "\n\nReply in ≤28 words: tiny acknowledgment + one new interview question."
+    "\n\nBrief acknowledgment + one new interview question (~35–55 words total)."
 )
 SALARY_FOLLOWUP_SUFFIX = (
-    "\n\nReply in ≤28 words: tiny acknowledgment + one salary negotiation question."
+    "\n\nBrief acknowledgment + one salary negotiation question (~35–55 words total)."
 )
 
 
@@ -127,17 +131,29 @@ def _mock_question_bank(session_id: str | None) -> list[str]:
     return MOCK_QUESTIONS
 
 
-def _mock_next_turn(history: History, session_id: str | None = None) -> dict[str, str]:
+MOCK_NATURAL_CLOSINGS = [
+    "Excellent — we're aligned. Thank you for a thoughtful conversation today; let's wrap here.",
+    "That works for us. I appreciate how you handled this — we'll end the session here.",
+]
+
+def _mock_next_turn(history: History, session_id: str | None = None) -> dict[str, Any]:
+    if history and _mock_negotiation_complete(history, session_id):
+        idx = len(history) % len(MOCK_NATURAL_CLOSINGS)
+        return {
+            "role": "interviewer",
+            "text": MOCK_NATURAL_CLOSINGS[idx],
+            "end_session": True,
+        }
     turn_index = sum(1 for entry in history if entry.get("role") == "interviewer")
     bank = _mock_question_bank(session_id)
     question = bank[turn_index % len(bank)]
     if turn_index == 0:
-        return {"role": "interviewer", "text": question}
+        return {"role": "interviewer", "text": question, "end_session": False}
     answer = _latest_candidate_answer(history)
     if answer:
         text = f"Thanks — that's helpful context. {question}"
-        return {"role": "interviewer", "text": text}
-    return {"role": "interviewer", "text": question}
+        return {"role": "interviewer", "text": text, "end_session": False}
+    return {"role": "interviewer", "text": question, "end_session": False}
 
 
 def _persona_instruction(session_id: str | None) -> str:
@@ -152,10 +168,11 @@ def _persona_instruction(session_id: str | None) -> str:
             "their answers — push back when they are vague, ease off if they are clearly stressed, and stay "
             "fully in character. Never mention rubrics, scores, or AI.\n\n"
             f"{CONCISE_SPOKEN_RULES}\n\n"
-            "Never repeat a question already asked."
+            "Never repeat a question already asked.\n\n"
+            f"{TURN_OUTPUT_JSON_RULES}"
         )
     else:
-        base = SYSTEM_INSTRUCTION
+        base = f"{SYSTEM_INSTRUCTION}\n\n{TURN_OUTPUT_JSON_RULES}"
 
     if scenario_id == "salary":
         base = f"{base}\n\n{SCENARIO_SALARY_ADDENDUM}"
@@ -201,7 +218,49 @@ def _history_as_recovery_input(history: History) -> str:
     return "\n".join(lines)
 
 
-def _trim_spoken_line(text: str, max_words: int = 32) -> str:
+def _parse_turn_json(raw: str) -> tuple[str, bool]:
+    """Parse Gemini JSON turn; fall back to plain text (no auto-end)."""
+    cleaned = (raw or "").strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return _trim_spoken_line(raw), False
+    if not isinstance(obj, dict):
+        return _trim_spoken_line(raw), False
+    spoken = str(obj.get("spoken", "")).strip()
+    if not spoken:
+        return _trim_spoken_line(raw), False
+    return _trim_spoken_line(spoken), bool(obj.get("end_session", False))
+
+
+def _mock_negotiation_complete(history: History, session_id: str | None) -> bool:
+    settings = _session_persona_settings(session_id)
+    if settings.get("scenario_id") != "salary":
+        return False
+    answer = _latest_candidate_answer(history).lower()
+    if not answer:
+        return False
+    markers = (
+        "accept the offer",
+        "i accept",
+        "deal",
+        "agreed",
+        "sounds good",
+        "works for me",
+        "i'll take it",
+        "happy to proceed",
+    )
+    return any(m in answer for m in markers)
+
+
+def _trim_spoken_line(text: str, max_words: int = 58) -> str:
     """Safety net so TTS stays short even if the model runs long."""
     cleaned = " ".join((text or "").split())
     if not cleaned:
@@ -294,7 +353,7 @@ def _gemini_next_turn(
     body: dict[str, Any] = {
         "model": model,
         "generation_config": {
-            "max_output_tokens": 256,
+            "max_output_tokens": 512,
             "thinking_level": "minimal",
         },
     }
@@ -318,8 +377,9 @@ def _gemini_next_turn(
     if isinstance(interaction_id, str):
         _persist_interaction_id(session_id, interaction_id)
 
-    question = _trim_spoken_line(_extract_interaction_text(payload))
-    return {"role": "interviewer", "text": question}
+    raw = _extract_interaction_text(payload)
+    spoken, end_session = _parse_turn_json(raw)
+    return {"role": "interviewer", "text": spoken, "end_session": end_session}
 
 
 def opening_question(session_id: str) -> dict[str, str]:
@@ -361,6 +421,14 @@ MOCK_INTERJECTIONS: dict[str, list[str]] = {
     "hr_elevated": [
         "No rush — take a moment to collect yourself, then continue when you're ready.",
         "Let's ease the pace. What's the one fact you want me to remember from your answer?",
+    ],
+    "pace_fast": [
+        "You're moving fast — slow down a beat so your key point lands.",
+        "Hold on — take a breath and walk me through that more deliberately.",
+    ],
+    "low_eye_contact": [
+        "I'm losing your eyes — look at the camera when you state your number.",
+        "Pause and look up — I want to hear you own this point.",
     ],
 }
 

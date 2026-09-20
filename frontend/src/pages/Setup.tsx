@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { Navigate } from '../App'
-import type { InterjectTrigger } from '../config/composure-thresholds'
+import type { DeliveryMood, InterjectTrigger } from '../config/composure-thresholds'
 import { interjectDevMode } from '../config/composure-thresholds'
 import type { CharacterId } from '../config/character-expressions'
 import type { TurnState } from '../lib/contracts'
@@ -102,6 +102,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const [lingeringUserCaption, setLingeringUserCaption] = useState('')
   const [interjectionCaption, setInterjectionCaption] = useState<string | null>(null)
   const [lastInterjectionTrigger, setLastInterjectionTrigger] = useState<InterjectTrigger | null>(null)
+  const [deliveryMood, setDeliveryMood] = useState<DeliveryMood>('neutral')
   const [devForceStress, setDevForceStress] = useState(() => interjectDevMode())
 
   const mode = MODES.find((m) => m.id === modeId) ?? null
@@ -111,7 +112,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const { stream, status: mediaStatus, error: mediaError, request, stop, setMicEnabled, setVideoEnabled } =
     useMediaStream()
 
-  const askRef = useRef<(q: string) => void>(() => {})
+  const askRef = useRef<(q: string, options?: { onSpoken?: () => void }) => void>(() => {})
 
   useInterjectDevShortcut(() => {
     setDevForceStress((on) => {
@@ -190,6 +191,14 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
           return
         }
         setCurrentQuestion(data.next_question.text)
+        if (data.end_session) {
+          sessionClosingRef.current = true
+          setSessionClosing(true)
+          askRef.current(data.next_question.text, {
+            onSpoken: () => endSessionRef.current(),
+          })
+          return
+        }
         askRef.current(data.next_question.text)
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Submit failed'
@@ -298,10 +307,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   })
 
   const playMainQuestion = useCallback(
-    (text: string) => {
+    (text: string, options?: { onSpoken?: () => void }) => {
       setInterjectionCaption(null)
       setLastInterjectionTrigger(null)
-      ask(text)
+      ask(text, options)
     },
     [ask],
   )
@@ -426,17 +435,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const reactionSessionId = started ? getStoredSessionId() : null
   const presageVitals = usePresageVitals(sessionLive, reactionSessionId)
 
-  useComposureReactions({
-    active: sessionInteractive && !!reactionSessionId,
-    sessionId: reactionSessionId,
-    sample: composureSample,
-    vitals: presageVitals,
-    turnState: state,
-    speakingPhase,
-    devForceStress,
-    onInterjection: onPresageInterjection,
-  })
-  const presageMetrics = usePresageMetrics({
+  const presageMetricsBundle = usePresageMetrics({
     sample: composureSample,
     turnState: state,
     backendComposure,
@@ -444,6 +443,21 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     getTranscript: browserSpeech.getTranscript,
     listening: userOwnsFloor,
     vitals: presageVitals,
+  })
+  const presageMetrics = presageMetricsBundle.metrics
+  const speechWpm = presageMetricsBundle.speechWpm
+
+  useComposureReactions({
+    active: sessionInteractive && !!reactionSessionId,
+    sessionId: reactionSessionId,
+    sample: composureSample,
+    vitals: presageVitals,
+    turnState: state,
+    speakingPhase,
+    speechWpm,
+    devForceStress,
+    onInterjection: onPresageInterjection,
+    onDeliveryMood: setDeliveryMood,
   })
   const presageStatus = presageStatusLabel({
     sessionLive,
@@ -459,6 +473,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     lastDirector,
     speakingPhase,
     lastInterjectionTrigger,
+    deliveryMood,
   )
 
   useEffect(() => {
@@ -568,6 +583,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setTranscribing(false)
     setInterjectionCaption(null)
     setLastInterjectionTrigger(null)
+    setDeliveryMood('neutral')
     setDevForceStress(interjectDevMode())
     sessionClosingRef.current = false
     setSessionClosing(false)
@@ -660,17 +676,14 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }
 
   const endSession = useCallback(async () => {
-    setGeneratingReport(true)
     finish()
     stop()
     browserSpeech.stop()
     const sessionId = getStoredSessionId()
     if (sessionId) {
-      try {
-        await getSessionReport(sessionId)
-      } catch {
-        /* Results page will retry */
-      }
+      void getSessionReport(sessionId).catch(() => {
+        /* Results page loads baseline first, then retries /report */
+      })
     }
     if (mode && character) {
       setSession({

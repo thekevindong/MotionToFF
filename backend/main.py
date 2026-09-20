@@ -41,6 +41,7 @@ from judge import (
     SETTINGS_SESSION_REPORT_KEY,
     apply_session_report_to_turns,
     pending_turn_scores,
+    presage_session_report,
     score,
     score_session,
 )
@@ -365,12 +366,30 @@ def get_session_by_id(session_id: str):
 
 @app.get("/sessions/{session_id}/report")
 
+def _report_cache_valid(cached: dict[str, Any], turn_count: int) -> bool:
+    if not isinstance(cached.get("rubric"), dict):
+        return False
+    if turn_count == 0:
+        return True
+    per_turn = cached.get("per_turn")
+    if not isinstance(per_turn, list):
+        return False
+    if len(per_turn) >= turn_count:
+        return True
+    if cached.get("mock") or cached.get("fallback"):
+        return len(per_turn) >= turn_count
+    return False
+
+
 def _get_or_build_session_report(session_id: str) -> dict[str, Any]:
     settings = get_session_settings(session_id)
+    turn_count = len(get_turns(session_id))
     cached = settings.get(SETTINGS_SESSION_REPORT_KEY)
-    if isinstance(cached, dict) and cached.get("rubric"):
+    if isinstance(cached, dict) and cached.get("rubric") and _report_cache_valid(cached, turn_count):
         return cached
     report = score_session(session_id)
+    if not _report_cache_valid(report, turn_count) and turn_count > 0:
+        report = presage_session_report(get_turns(session_id), fallback=True)
     set_session_setting(session_id, SETTINGS_SESSION_REPORT_KEY, report)
     return report
 
@@ -506,6 +525,8 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
         "decision": decision,
 
         "next_question": next_question,
+
+        "end_session": bool(next_question.get("end_session")),
 
     }
 

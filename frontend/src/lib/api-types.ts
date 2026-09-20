@@ -88,9 +88,16 @@ export type TurnResponse = {
   scores: RubricScores
   decision: DirectorDecision
   next_question: InterviewerLine
+  /** Gemini chose to end the practice (deal reached, natural wrap-up, etc.) */
+  end_session?: boolean
 }
 
-export type InterjectTrigger = 'high_stress' | 'composure_low' | 'hr_elevated'
+export type InterjectTrigger =
+  | 'high_stress'
+  | 'composure_low'
+  | 'hr_elevated'
+  | 'pace_fast'
+  | 'low_eye_contact'
 
 export type InterjectRequest = {
   trigger: InterjectTrigger
@@ -98,6 +105,8 @@ export type InterjectRequest = {
     composure: number
     stress: number
     hr_bpm?: number | null
+    eye_contact?: number | null
+    pace_wpm?: number | null
     source: string
   }
 }

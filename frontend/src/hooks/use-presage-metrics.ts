@@ -76,7 +76,7 @@ export function usePresageMetrics({
     return () => window.clearInterval(id)
   }, [listening, getTranscript])
 
-  return useMemo((): PresageMetricRow[] => {
+  return useMemo((): { metrics: PresageMetricRow[]; speechWpm: number | null } => {
     const liveComposure = sample?.composure ?? 0.7
     const engagement = sample?.signals.engagement ?? null
     const stress = sample?.signals.expression?.stress ?? null
@@ -109,12 +109,6 @@ export function usePresageMetrics({
 
     const calibrating = !faceReady && !showBackend
     const hasFace = faceReady && sample?.source === 'presage' && faceRaw !== null
-
-    const signalSource = vitals.sidecarReachable
-      ? 'Sidecar'
-      : hasFace
-        ? 'MediaPipe'
-        : 'Speech fallback'
 
     const rows: PresageMetricRow[] = [
       {
@@ -199,17 +193,9 @@ export function usePresageMetrics({
         barPct: fillerBar,
         invert: true,
       },
-      {
-        label: 'Signal source',
-        value: signalSource,
-        unit: '',
-        barPct: 0,
-        showBar: false,
-        hint: vitals.composureMode ? `Backend mode: ${vitals.composureMode}` : undefined,
-      },
     ]
 
-    return rows
+    return { metrics: rows, speechWpm: speechWpm ?? null }
   }, [
     sample,
     turnState,
@@ -235,7 +221,7 @@ export function presageStatusLabel({
 }): string {
   if (!sessionLive) return 'idle'
   if (vitals.sidecarReachable) return 'live · sidecar vitals'
-  if (!faceReady) return 'loading MediaPipe model'
-  if (sample?.source === 'presage' && sample.signals.faceRaw) return 'live · MediaPipe face'
-  return 'no face — speech fallback'
+  if (!faceReady) return 'calibrating camera'
+  if (sample?.source === 'presage' && sample.signals.faceRaw) return 'live · face tracking'
+  return 'speech fallback'
 }

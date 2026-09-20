@@ -3,6 +3,7 @@ import type { Navigate } from '../App'
 import { getSession as fetchSessionApi, getSessionReport } from '../lib/api'
 import type { SessionTurn } from '../lib/api-types'
 import {
+  applyPresageScoresToTurns,
   buildImprovements,
   buildMetrics,
   buildStrengths,
@@ -29,6 +30,7 @@ type LoadState =
       jobTitle: string | null
       reportFallback: boolean
       reportSource: string | null
+      nemotronScoring: boolean
     }
 
 export default function Results({ navigate }: { navigate: Navigate }) {
@@ -44,28 +46,61 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   useEffect(() => {
     let cancelled = false
     const sessionId = summary?.sessionId ?? getStoredSessionId()
-    const load = sessionId
-      ? getSessionReport(sessionId)
-      : fetchSessionApi(undefined)
-    load
-      .then((data) => {
+    const finishReady = (
+      data: Awaited<ReturnType<typeof getSessionReport>>,
+      opts: { reportFallback: boolean; nemotronScoring: boolean },
+    ) => {
+      const turns = applyPresageScoresToTurns(data.turns ?? [])
+      setState({
+        status: 'ready',
+        turns,
+        jobTitle: data.job_title ?? null,
+        reportFallback: opts.reportFallback,
+        reportSource: data.session_report?.source ?? null,
+        nemotronScoring: opts.nemotronScoring,
+      })
+    }
+
+    const load = async () => {
+      if (!sessionId) {
+        const data = await fetchSessionApi(undefined)
+        finishReady(data, { reportFallback: true, nemotronScoring: false })
+        return
+      }
+
+      let baseline: Awaited<ReturnType<typeof fetchSessionApi>>
+      try {
+        baseline = await fetchSessionApi(sessionId)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Load failed'
+        throw new Error(message)
+      }
+
+      if (!cancelled) {
+        finishReady(baseline, { reportFallback: true, nemotronScoring: true })
+      }
+
+      try {
+        const data = await getSessionReport(sessionId)
         if (!cancelled) {
-          const report = data.session_report
-          setState({
-            status: 'ready',
-            turns: data.turns ?? [],
-            jobTitle: data.job_title ?? null,
-            reportFallback: Boolean(report?.fallback),
-            reportSource: report?.source ?? null,
+          finishReady(data, {
+            reportFallback: Boolean(data.session_report?.fallback),
+            nemotronScoring: false,
           })
         }
-      })
-      .catch((err) => {
+      } catch {
         if (!cancelled) {
-          const message = err instanceof Error ? err.message : 'Load failed'
-          setState({ status: 'error', message })
+          finishReady(baseline, { reportFallback: true, nemotronScoring: false })
         }
-      })
+      }
+    }
+
+    load().catch((err) => {
+      if (!cancelled) {
+        const message = err instanceof Error ? err.message : 'Load failed'
+        setState({ status: 'error', message })
+      }
+    })
     return () => {
       cancelled = true
     }
@@ -112,9 +147,15 @@ export default function Results({ navigate }: { navigate: Navigate }) {
           </p>
         )}
 
-        {state.status === 'ready' && state.reportFallback && (
+        {state.status === 'ready' && state.nemotronScoring && (
+          <p className="report-status" role="status">
+            Showing baseline scores now — Nemotron is still scoring your transcript (often 10–30s).
+          </p>
+        )}
+
+        {state.status === 'ready' && !state.nemotronScoring && state.reportFallback && (
           <p className="report-status report-status--warn" role="status">
-            Nemotron could not finish scoring — showing baseline charts from your session data.
+            Nemotron could not finish scoring — showing Presage baseline charts from your answers and composure.
           </p>
         )}
 
