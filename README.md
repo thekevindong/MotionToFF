@@ -14,17 +14,19 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-### Frontend (Next.js, port 3000)
+### Frontend (Vite + React, port 5173)
 
 ```powershell
 cd frontend
-pnpm install   # or: npx pnpm@12.3.4 install
-pnpm dev       # or: npx pnpm@12.3.4 dev
+npm install
+npm run dev
 ```
 
-Copy `frontend/.env.example` to `frontend/.env.local` and set `ELEVENLABS_API_KEY` when using voice routes.
+Or from repo root: `npm run dev` (after `npm install` in `frontend/` once).
 
-Open http://localhost:3000 — join a call, answer via voice (or browser STT fallback messaging), then http://localhost:3000/report for composure + rubrics.
+Copy `frontend/.env.example` to `frontend/.env` and set `VITE_API_URL` if the API is not on `http://localhost:8000`.
+
+Open http://localhost:5173 — **Enter studio** (`/start`). Legacy URLs `/setup`, `/interview`, and `/report` still work as aliases. Rollback UI: branch `legacy-next-frontend` (Next.js on port 3000).
 
 ## Step 5 — Presage smoke test
 

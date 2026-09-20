@@ -18,6 +18,25 @@ MOCK_QUESTIONS = [
     "Where do you see the biggest gap in your experience for this position?",
 ]
 
+MOCK_SALARY_QUESTIONS = [
+    "To start, what salary range are you targeting for this role, and what led you to that number?",
+    "How does that expectation compare to your current or most recent compensation?",
+    "If we cannot meet the base you asked for, what trade-offs would you consider — bonus, equity, title, or start date?",
+    "Walk me through the specific outcomes or skills that justify the number you are asking for.",
+]
+
+CHARACTER_PERSONAS: dict[str, str] = {
+    "recruiter": """You are the University Recruiter in a live salary negotiation practice session.
+Tone: warm and encouraging. Acknowledge preparation, ask clarifying questions gently, and guide the candidate toward a realistic offer without being adversarial.""",
+    "manager": """You are the Senior Manager (hiring manager) in a live salary negotiation practice session.
+Tone: formal and structure-focused. Expect clear reasoning, benchmarks, and trade-offs. Keep pace professional and slightly reserved.""",
+    "hr": """You are the HR Lead (compensation & policy) in a live salary negotiation practice session.
+Tone: strict and budget-conscious. Push back firmly on numbers, cite policy and bands, and stress business constraints.""",
+}
+
+SCENARIO_SALARY_ADDENDUM = """Scenario: salary negotiation for a job offer (not a generic behavioral interview).
+Focus on compensation expectations, justification, benefits, timing, and counters. After a brief acknowledgment, ask exactly ONE new negotiation question per turn."""
+
 # Interactions API (recommended over legacy generateContent). See:
 # https://ai.google.dev/gemini-api/docs/interactions-overview
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
@@ -43,8 +62,14 @@ CONTEXT_MAX_CHARS = 8000
 FIRST_TURN_INPUT = (
     "The candidate has joined the call. Ask your first interview question now."
 )
+SALARY_FIRST_TURN_INPUT = (
+    "The candidate has joined the salary negotiation. Open with your first compensation-focused question."
+)
 FOLLOWUP_SUFFIX = (
     "\n\nRespond with a brief acknowledgment of their answer, then your next interview question."
+)
+SALARY_FOLLOWUP_SUFFIX = (
+    "\n\nRespond with a brief acknowledgment of their answer, then your next salary negotiation question."
 )
 
 
@@ -82,9 +107,26 @@ def build_interviewer_context(session_id: str | None) -> str:
     )
 
 
-def _mock_next_turn(history: History) -> dict[str, str]:
+def _session_persona_settings(session_id: str | None) -> dict[str, Any]:
+    if not session_id:
+        return {}
+    from repository import get_session_settings
+
+    settings = get_session_settings(session_id)
+    return settings if isinstance(settings, dict) else {}
+
+
+def _mock_question_bank(session_id: str | None) -> list[str]:
+    settings = _session_persona_settings(session_id)
+    if settings.get("scenario_id") == "salary":
+        return MOCK_SALARY_QUESTIONS
+    return MOCK_QUESTIONS
+
+
+def _mock_next_turn(history: History, session_id: str | None = None) -> dict[str, str]:
     turn_index = sum(1 for entry in history if entry.get("role") == "interviewer")
-    question = MOCK_QUESTIONS[turn_index % len(MOCK_QUESTIONS)]
+    bank = _mock_question_bank(session_id)
+    question = bank[turn_index % len(bank)]
     if turn_index == 0:
         return {"role": "interviewer", "text": question}
     answer = _latest_candidate_answer(history)
@@ -94,11 +136,50 @@ def _mock_next_turn(history: History) -> dict[str, str]:
     return {"role": "interviewer", "text": question}
 
 
+def _persona_instruction(session_id: str | None) -> str:
+    settings = _session_persona_settings(session_id)
+    character_id = settings.get("character_id")
+    scenario_id = settings.get("scenario_id")
+
+    if isinstance(character_id, str) and character_id in CHARACTER_PERSONAS:
+        base = CHARACTER_PERSONAS[character_id]
+        base = (
+            f"{base}\n\nEach turn (except the very first), respond in a natural spoken style:\n"
+            "1. Start with a brief, warm acknowledgment of what the candidate just said — one short sentence.\n"
+            "2. Then ask exactly ONE new question (one or two sentences).\n\n"
+            "On the first turn only, skip the acknowledgment and ask a strong opening question.\n"
+            "Never repeat a question already asked. Keep the whole turn concise (about 2–4 sentences). "
+            "No bullet points or section labels."
+        )
+    else:
+        base = SYSTEM_INSTRUCTION
+
+    if scenario_id == "salary":
+        base = f"{base}\n\n{SCENARIO_SALARY_ADDENDUM}"
+
+    return base
+
+
 def _system_instruction(session_id: str | None) -> str:
+    base = _persona_instruction(session_id)
     context = build_interviewer_context(session_id)
     if not context:
-        return SYSTEM_INSTRUCTION
-    return f"{SYSTEM_INSTRUCTION}\n\n{context}"
+        return base
+    return f"{base}\n\n{context}"
+
+
+def _first_turn_input(session_id: str | None) -> str:
+    settings = _session_persona_settings(session_id)
+    if settings.get("scenario_id") == "salary":
+        return SALARY_FIRST_TURN_INPUT
+    return FIRST_TURN_INPUT
+
+
+def _followup_suffix(session_id: str | None) -> str:
+    settings = _session_persona_settings(session_id)
+    if settings.get("scenario_id") == "salary":
+        return SALARY_FOLLOWUP_SUFFIX
+    return FOLLOWUP_SUFFIX
 
 
 def _history_as_recovery_input(history: History) -> str:
@@ -203,12 +284,12 @@ def _gemini_next_turn(
 
     if not history:
         body["system_instruction"] = _system_instruction(session_id)
-        body["input"] = FIRST_TURN_INPUT
+        body["input"] = _first_turn_input(session_id)
     elif previous_id:
         answer = _latest_candidate_answer(history)
         if not answer:
             raise ValueError("Turn history missing candidate answer")
-        body["input"] = f"{answer}{FOLLOWUP_SUFFIX}"
+        body["input"] = f"{answer}{_followup_suffix(session_id)}"
         body["previous_interaction_id"] = previous_id
     else:
         # No stored interaction (legacy session / mock fallback earlier) — start a new chain.
@@ -242,10 +323,10 @@ def next_turn(history: History, session_id: str | None = None) -> dict[str, str]
     """Return the next interviewer line ({ role, text }). Uses Gemini when keyed."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return _mock_next_turn(history)
+        return _mock_next_turn(history, session_id=session_id)
 
     try:
         return _gemini_next_turn(history, api_key, session_id=session_id)
     except Exception as exc:  # noqa: BLE001 — keep /turn green; log for debugging
         logger.warning("Gemini interviewer failed, using mock: %s", exc)
-        return _mock_next_turn(history)
+        return _mock_next_turn(history, session_id=session_id)

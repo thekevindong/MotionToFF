@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
+from voice import speech_to_text, text_to_speech, voice_status, TtsRequest
+
 from fastapi.middleware.cors import CORSMiddleware
 
 from pydantic import BaseModel, Field
@@ -47,6 +49,8 @@ from repository import (
     init_db,
 
     list_documents,
+
+    get_session_settings,
 
     session_exists,
 
@@ -146,6 +150,36 @@ def health():
 
 
 
+@app.get("/health/voice")
+
+def health_voice():
+
+    return voice_status()
+
+
+
+
+
+@app.post("/api/stt")
+
+async def api_stt(audio: UploadFile = File(...)):
+
+    return await speech_to_text(audio)
+
+
+
+
+
+@app.post("/api/tts")
+
+async def api_tts(body: TtsRequest):
+
+    return await text_to_speech(body)
+
+
+
+
+
 History = list[dict[str, str]]
 
 
@@ -190,11 +224,20 @@ def _session_payload(session_id: str) -> dict[str, Any]:
 
         raise HTTPException(status_code=404, detail="session_not_found")
 
+    settings = get_session_settings(session_id)
+    persona_settings = {
+        key: settings[key]
+        for key in ("scenario_id", "character_id")
+        if key in settings
+    }
+
     return {
 
         "session_id": session_id,
 
         "job_title": row.get("job_title"),
+
+        "settings": persona_settings,
 
         "current_question": _current_question(session_id),
 
@@ -208,9 +251,17 @@ def _session_payload(session_id: str) -> dict[str, Any]:
 
 
 
+ALLOWED_SCENARIO_IDS = frozenset({"salary", "interview", "speaking", "thesis"})
+ALLOWED_CHARACTER_IDS = frozenset({"recruiter", "manager", "hr"})
+
+
 class CreateSessionRequest(BaseModel):
 
     job_title: str | None = None
+
+    scenario_id: str | None = None
+
+    character_id: str | None = None
 
 
 
@@ -228,8 +279,26 @@ class TurnRequest(BaseModel):
 
 def post_sessions(body: CreateSessionRequest = CreateSessionRequest()):
     job_title = body.job_title.strip() if body.job_title else None
-    session_id = create_session(job_title=job_title or None)
-    return {"session_id": session_id, "job_title": job_title}
+    scenario_id = body.scenario_id.strip() if body.scenario_id else None
+    character_id = body.character_id.strip() if body.character_id else None
+
+    if scenario_id and scenario_id not in ALLOWED_SCENARIO_IDS:
+        raise HTTPException(status_code=400, detail="invalid_scenario_id")
+    if character_id and character_id not in ALLOWED_CHARACTER_IDS:
+        raise HTTPException(status_code=400, detail="invalid_character_id")
+
+    settings: dict[str, str] = {}
+    if scenario_id:
+        settings["scenario_id"] = scenario_id
+    if character_id:
+        settings["character_id"] = character_id
+
+    session_id = create_session(job_title=job_title or None, settings=settings if settings else None)
+    return {
+        "session_id": session_id,
+        "job_title": job_title,
+        "settings": settings,
+    }
 
 
 

@@ -69,16 +69,20 @@ def init_db() -> None:
         )
 
 
-def create_session(job_title: str | None = None) -> str:
+def create_session(
+    job_title: str | None = None,
+    settings: dict[str, Any] | None = None,
+) -> str:
     session_id = str(uuid.uuid4())
     now = _utc_now()
+    settings_json = json.dumps(settings if settings else {})
     with _connect() as conn:
         conn.execute(
             """
             INSERT INTO sessions (id, created_at, status, job_title, document_ids_json, settings_json)
-            VALUES (?, ?, 'active', ?, '[]', '{}')
+            VALUES (?, ?, 'active', ?, '[]', ?)
             """,
-            (session_id, now, job_title),
+            (session_id, now, job_title, settings_json),
         )
     return session_id
 
