@@ -2,13 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import { ThesisDefensePrompt } from '../components/ThesisDefensePrompt'
 import type { Character, Mode } from '../config/modes'
-import type { CharacterId } from '../config/character-expressions'
-import { stageBackgroundUrl } from '../config/stage-backgrounds'
+import type { CharacterGender } from '../config/character-voices'
 import type { TurnState } from '../lib/contracts'
 import { useAudienceReaction } from '../hooks/use-audience-reaction'
 import { useBrowserSpeechCapture } from '../hooks/use-browser-speech-capture'
 import { useComposureSampler } from '../hooks/use-composure-sampler'
-import { useCharacterExpression } from '../hooks/use-character-expression'
 import { useFaceComposure } from '../hooks/use-face-composure'
 import { useInterviewMachine } from '../hooks/use-interview-machine'
 import { useMediaStream } from '../hooks/use-media-stream'
@@ -71,7 +69,7 @@ type Props = {
 export function ThesisLive({
   mode,
   prep,
-  character,
+  character: _character,
   onLeaveStudio,
   onNavigateResults,
   restartNote,
@@ -86,6 +84,7 @@ export function ThesisLive({
   const [turnError, setTurnError] = useState<string | null>(null)
   const [transcribing, setTranscribing] = useState(false)
   const [sessionClosing, setSessionClosing] = useState(false)
+  const [generatingReport, setGeneratingReport] = useState(false)
   const sessionClosingRef = useRef(false)
   const handoffPlayedRef = useRef(false)
 
@@ -108,22 +107,30 @@ export function ThesisLive({
   const qaDurationSec = prep.qa_duration_sec
   const qaRemaining = Math.max(0, qaDurationSec - qaSeconds)
 
-  const navigateResultsWithSession = useCallback(() => {
+  const committeeVoiceGender: CharacterGender =
+    prep.committee_voice_gender === 'male' ? 'male' : 'female'
+
+  const navigateResultsWithSession = useCallback(async () => {
     const sessionId = getStoredSessionId()
+    setGeneratingReport(true)
     if (sessionId) {
-      void getSessionReport(sessionId).catch(() => {})
+      try {
+        await getSessionReport(sessionId)
+      } catch {
+        /* Results page may retry */
+      }
     }
     setSession({
       sessionId: sessionId ?? undefined,
       mode: mode.title,
-      opponent: character.name,
-      opponentRole: character.role,
-      tone: character.tone,
-      opponentImg: character.img,
+      opponent: 'Committee',
+      opponentRole: 'Thesis defense',
+      tone: 'Voice from audience',
+      opponentImg: '/brand/speakup-icon-white.png',
       durationSec: qaSecondsRef.current + prep.presentation_duration_sec,
     })
     onNavigateResults()
-  }, [character, mode.title, onNavigateResults, prep.presentation_duration_sec])
+  }, [mode.title, onNavigateResults, prep.presentation_duration_sec])
 
   const beginQa = useCallback(async (result: ThesisPresentationCompleteResponse) => {
     setHandoffLine(result.handoff_line?.trim() || "Thank you. Let's move to questions about your work.")
@@ -151,7 +158,6 @@ export function ThesisLive({
     seconds: presentationSeconds,
     durationSec: presentationDurationSec,
     submitError,
-    generatingReport: presentationSaving,
     startPresentation,
     completePresentation,
     attachRecorder,
@@ -172,7 +178,8 @@ export function ThesisLive({
     useInterviewMachine({
       stream,
       micEnabled: micOn,
-      characterId: character.id as CharacterId,
+      characterId: null,
+      voiceGender: committeeVoiceGender,
     })
 
   const presenting = sessionPhase === 'presentation' && presentationFlow === 'PRESENTING'
@@ -248,9 +255,9 @@ export function ThesisLive({
   const { ready: faceReady, getMetrics } = useFaceComposure(selfVideoRef, faceAnalysisActive)
   const sessionId = getStoredSessionId() ?? 'thesis'
   const { latest: composureSample } = useComposureSampler({
-    active: presenting,
+    active: presenting || qaLive,
     sessionId,
-    questionId: 'thesis_presentation',
+    questionId: sessionPhase === 'qa' ? 'thesis_qa' : 'thesis_presentation',
     getMetrics,
     onSample: pushSample,
   })
@@ -276,27 +283,13 @@ export function ThesisLive({
     presage_degraded: presageDegradedRef.current,
   }
 
-  const audienceBase = presentationFlow === 'READY' ? 'empty' : 'house'
-  const { backdrop: auditoriumBackdrop } = useAudienceReaction({
+  const audienceBase =
+    sessionPhase === 'presentation' && presentationFlow === 'READY' ? 'empty' : 'house'
+  const { backdrop: stageBackgroundSrc } = useAudienceReaction({
     sample: composureSample,
     basePhase: audienceBase,
-    enabled: presenting && faceAnalysisActive,
+    enabled: (presenting || qaLive) && faceAnalysisActive,
   })
-
-  const stageBackgroundSrc =
-    sessionPhase === 'qa'
-      ? stageBackgroundUrl('thesis', character.id as CharacterId, { thesisPhase: 'qa' })
-      : auditoriumBackdrop
-
-  const { src: opponentImg } = useCharacterExpression(
-    character.id as CharacterId,
-    qaLive,
-    qaState,
-    null,
-    speakingPhase,
-    null,
-    undefined,
-  )
 
   useEffect(() => {
     qaSecondsRef.current = qaSeconds
@@ -469,11 +462,11 @@ export function ThesisLive({
     presentationFlow === 'PRESENTATION_SUBMIT' || transcribing || sessionClosing
 
   return (
-    <div className="studio studio--thesis-live">
+    <div className="studio studio--thesis-live studio--speaking-live">
       <StudioLive
         onLeaveStudio={onLeaveStudio}
         mode={mode}
-        character={sessionPhase === 'qa' ? character : null}
+        character={null}
         speakingSummary={null}
         sessionLive={sessionLive}
         sessionClosing={sessionClosing || qaTimeUpPending || presentationFlow === 'PRESENTATION_SUBMIT'}
@@ -491,7 +484,7 @@ export function ThesisLive({
           vitals: presageVitals,
           cameraDegraded: presageDegraded,
         })}
-        opponentImg={opponentImg || character.img}
+        opponentImg=""
         stageBackgroundSrc={stageBackgroundSrc}
         aiCaptionLine={sessionPhase === 'qa' ? aiCaption ?? currentQuestion : null}
         userCaption={userCaption}
@@ -523,7 +516,7 @@ export function ThesisLive({
         onEndSession={handleEndEarly}
         onSkipQa={sessionPhase === 'presentation' ? handleSkipQa : undefined}
         transcribing={presentationFlow === 'PRESENTATION_SUBMIT' || transcribing}
-        generatingReport={presentationSaving}
+        generatingReport={generatingReport}
         speakingFlow={sessionPhase === 'presentation' ? speakingFlow : undefined}
         thesisSessionPhase={sessionPhase}
         thesisQaTimerLabel={
@@ -537,6 +530,7 @@ export function ThesisLive({
           ) : undefined
         }
         isThesisPresentationRail={sessionPhase === 'presentation'}
+        thesisFloatingCamera={sessionPhase === 'presentation'}
       />
     </div>
   )

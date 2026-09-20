@@ -48,11 +48,14 @@ export type SessionDocument = {
 
 export type ThesisPackId = 'short' | 'long'
 
+export type CommitteeVoiceGender = 'female' | 'male'
+
 export type ThesisPrepareResponse = {
   thesis_pack: ThesisPackId
   presentation_duration_sec: number
   qa_duration_sec: number
   character_id: string
+  committee_voice_gender: CommitteeVoiceGender
   defense_document_id: string
   defense_filename: string
   defense_text_preview: string
@@ -68,6 +71,7 @@ export type ThesisQaStartResponse = {
 export type SessionPersonaSettings = {
   scenario_id?: string
   character_id?: string
+  committee_voice_gender?: CommitteeVoiceGender
   session_duration_sec?: number
   thesis_pack?: ThesisPackId
   presentation_duration_sec?: number

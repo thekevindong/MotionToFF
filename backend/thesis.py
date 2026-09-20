@@ -18,6 +18,7 @@ THESIS_PACKS: dict[str, dict[str, int]] = {
 }
 ALLOWED_THESIS_PACKS = frozenset(THESIS_PACKS.keys())
 COMMITTEE_CHARACTER_IDS = ("recruiter", "manager", "hr")
+COMMITTEE_VOICE_GENDERS = ("female", "male")
 ALLOWED_THESIS_SESSION_DURATION_SEC = frozenset({90, 180})
 
 MIN_DEFENSE_CHARS = 80
@@ -172,6 +173,19 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def pick_committee_voice_gender(session_id: str) -> str:
+    """Random male/female TTS for disembodied committee voice; stable per session."""
+    from repository import get_session_settings, set_session_setting
+
+    settings = get_session_settings(session_id)
+    existing = (settings.get("committee_voice_gender") or "").strip()
+    if existing in COMMITTEE_VOICE_GENDERS:
+        return existing
+    chosen = random.choice(list(COMMITTEE_VOICE_GENDERS))
+    set_session_setting(session_id, "committee_voice_gender", chosen)
+    return chosen
+
+
 def pick_committee_character(session_id: str) -> str:
     """Pick recruiter / manager / hr once per session; stable on repeat calls."""
     from repository import get_session_settings, set_session_setting
@@ -260,6 +274,7 @@ def thesis_prepare(session_id: str, thesis_pack: str) -> dict[str, Any]:
     durations = THESIS_PACKS[pack]
     preview = defense_text_preview(get_defense_text(session_id))
     character_id = pick_committee_character(session_id)
+    voice_gender = pick_committee_voice_gender(session_id)
 
     set_session_setting(session_id, "thesis_pack", pack)
     set_session_setting(session_id, "presentation_duration_sec", durations["presentation_duration_sec"])
@@ -274,6 +289,7 @@ def thesis_prepare(session_id: str, thesis_pack: str) -> dict[str, Any]:
         "presentation_duration_sec": durations["presentation_duration_sec"],
         "qa_duration_sec": durations["qa_duration_sec"],
         "character_id": character_id,
+        "committee_voice_gender": voice_gender,
         "defense_document_id": doc_meta["document_id"],
         "defense_filename": doc_meta["filename"],
         "defense_text_preview": preview,

@@ -1490,6 +1490,9 @@
   flex-wrap: wrap;
   gap: 10px;
 }
+.prep-duration-block--center .duration-grid {
+  justify-content: center;
+}
 .duration-chip {
   min-width: 4.5rem;
   padding: 10px 16px;

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { CharacterId } from '../config/character-expressions'
-import { elevenLabsVoiceIdForCharacter } from '../config/character-voices'
+import {
+  type CharacterGender,
+  elevenLabsVoiceIdForCharacter,
+  elevenLabsVoiceIdForGender,
+} from '../config/character-voices'
 import type { TurnState } from '../lib/contracts'
-import { browserVoiceForCharacter } from '../voice/browser-voice'
+import { browserVoiceForCharacter, browserVoiceForGender } from '../voice/browser-voice'
 import { synthesizeSpeech } from '../voice/stt'
 
 
@@ -22,6 +26,8 @@ interface MachineArgs {
   stream: MediaStream | null
   micEnabled: boolean
   characterId?: CharacterId | null
+  /** When set, TTS uses this gender instead of character sprite mapping (thesis committee voice). */
+  voiceGender?: CharacterGender | null
   recordAnswers?: boolean
   onAnswerRecorded?: (blob: Blob) => void
 }
@@ -32,6 +38,7 @@ export function useInterviewMachine({
   stream,
   micEnabled,
   characterId = null,
+  voiceGender = null,
   recordAnswers = true,
   onAnswerRecorded,
 }: MachineArgs) {
@@ -72,6 +79,9 @@ export function useInterviewMachine({
 
   const characterIdRef = useRef(characterId)
   characterIdRef.current = characterId
+
+  const voiceGenderRef = useRef(voiceGender)
+  voiceGenderRef.current = voiceGender
 
   const stopPlaybackOnly = useCallback(() => {
 
@@ -288,7 +298,10 @@ export function useInterviewMachine({
 
       const utterance = new SpeechSynthesisUtterance(text)
       utterance.rate = 1
-      const voice = browserVoiceForCharacter(characterIdRef.current)
+      const gender = voiceGenderRef.current
+      const voice = gender
+        ? browserVoiceForGender(gender)
+        : browserVoiceForCharacter(characterIdRef.current)
       if (voice) utterance.voice = voice
 
       utterance.onstart = () => markAudible(token)
@@ -324,8 +337,13 @@ export function useInterviewMachine({
         return
       }
 
+      const gender = voiceGenderRef.current
       const charId = characterIdRef.current
-      const voiceId = charId ? elevenLabsVoiceIdForCharacter(charId) : undefined
+      const voiceId = gender
+        ? elevenLabsVoiceIdForGender(gender)
+        : charId
+          ? elevenLabsVoiceIdForCharacter(charId)
+          : undefined
 
       synthesizeSpeech(line, voiceId)
         .then(async (buf: ArrayBuffer) => {

@@ -268,7 +268,7 @@ export function StudioPrep({
           <p className="prep-panel-sub">
             Short or long pack — presentation time and committee Q&A are fixed for each.
           </p>
-          <div className="prep-duration-block">
+          <div className="prep-duration-block prep-duration-block--center">
             <div className="duration-grid" role="listbox" aria-label="Thesis duration pack">
               {THESIS_PACK_OPTIONS.map((opt) => (
                 <button

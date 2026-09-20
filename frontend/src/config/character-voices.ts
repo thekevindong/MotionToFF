@@ -18,3 +18,7 @@ const ELEVENLABS_VOICE_ID: Record<CharacterGender, string> = {
 export function elevenLabsVoiceIdForCharacter(charId: CharacterId): string {
   return ELEVENLABS_VOICE_ID[CHARACTER_GENDER[charId]]
 }
+
+export function elevenLabsVoiceIdForGender(gender: CharacterGender): string {
+  return ELEVENLABS_VOICE_ID[gender]
+}

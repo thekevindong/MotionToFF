@@ -45,6 +45,7 @@ function CameraTile({
   videoRef,
   stageRef,
   variant = 'floating',
+  defaultCorner = 'top-right',
 }: {
   stream: MediaStream | null
   mediaStatus: string
@@ -53,6 +54,7 @@ function CameraTile({
   videoRef: RefObject<HTMLVideoElement | null>
   stageRef: RefObject<HTMLDivElement | null>
   variant?: 'floating' | 'docked'
+  defaultCorner?: 'top-right' | 'bottom-right'
 }) {
   const docked = variant === 'docked'
   const tileRef = useRef<HTMLDivElement>(null)
@@ -93,8 +95,10 @@ function CameraTile({
       /* ignore */
     }
     const w = el.offsetWidth || width
-    setPos(clamp(stage.clientWidth - w - 16, 16))
-  }, [docked, pos, clamp, width, stageRef])
+    const h = el.offsetHeight || width * 0.72
+    const y = defaultCorner === 'bottom-right' ? stage.clientHeight - h - 16 : 16
+    setPos(clamp(stage.clientWidth - w - 16, y))
+  }, [defaultCorner, docked, pos, clamp, width, stageRef])
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -310,6 +314,7 @@ export type StudioLiveProps = {
   thesisSessionPhase?: 'presentation' | 'qa'
   thesisQaTimerLabel?: string | null
   isThesisPresentationRail?: boolean
+  thesisFloatingCamera?: boolean
 }
 
 export function StudioLive({
@@ -356,11 +361,12 @@ export function StudioLive({
   thesisSessionPhase,
   thesisQaTimerLabel,
   isThesisPresentationRail,
+  thesisFloatingCamera = false,
 }: StudioLiveProps) {
   const isSpeaking = mode.id === 'speaking'
   const isThesis = mode.id === 'thesis'
   const showSpeakingRail = isSpeaking || Boolean(isThesisPresentationRail)
-  const showOpponent = Boolean(character) && !isSpeaking && (!isThesis || thesisSessionPhase === 'qa')
+  const showOpponent = Boolean(character) && !isSpeaking && !isThesis
   const summaryLabel = isSpeaking && speakingSummary
     ? `${speakingSummary.title} · ${speakingSummary.speaker}`
     : character
@@ -415,16 +421,29 @@ export function StudioLive({
           {showSpeakingRail && teleprompterOverlay && (
             <div className="speaking-stage-rail">
               {teleprompterOverlay}
-              <CameraTile
-                variant="docked"
-                stream={stream}
-                mediaStatus={mediaStatus}
-                videoEnabled={videoOn}
-                onToggleVideo={onToggleVideo}
-                videoRef={videoRef}
-                stageRef={stageRef}
-              />
+              {!thesisFloatingCamera && (
+                <CameraTile
+                  variant="docked"
+                  stream={stream}
+                  mediaStatus={mediaStatus}
+                  videoEnabled={videoOn}
+                  onToggleVideo={onToggleVideo}
+                  videoRef={videoRef}
+                  stageRef={stageRef}
+                />
+              )}
             </div>
+          )}
+          {showSpeakingRail && thesisFloatingCamera && (
+            <CameraTile
+              stream={stream}
+              mediaStatus={mediaStatus}
+              videoEnabled={videoOn}
+              onToggleVideo={onToggleVideo}
+              videoRef={videoRef}
+              stageRef={stageRef}
+              defaultCorner="bottom-right"
+            />
           )}
           <img className="stage-watermark" src="/brand/speakup-icon-white.png" alt="" aria-hidden="true" />
 
@@ -475,7 +494,7 @@ export function StudioLive({
             </p>
           )}
 
-          {!showSpeakingRail && (
+          {!showSpeakingRail && !thesisFloatingCamera && (
             <CameraTile
               stream={stream}
               mediaStatus={mediaStatus}

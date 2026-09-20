@@ -283,6 +283,8 @@ export default function Results({ navigate }: { navigate: Navigate }) {
                         'You'
                       ) : isSpeaking ? (
                         teleprompterLabel
+                      ) : isThesis ? (
+                        'Committee'
                       ) : (
                         <img src={img || '/placeholder.svg'} alt={opponent} className="bubble-avatar" />
                       )}

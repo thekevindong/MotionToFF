@@ -437,6 +437,7 @@ class ThesisPrepareResponse(BaseModel):
     presentation_duration_sec: int
     qa_duration_sec: int
     character_id: str
+    committee_voice_gender: str
     defense_document_id: str
     defense_filename: str
     defense_text_preview: str

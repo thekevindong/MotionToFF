@@ -52,7 +52,7 @@ export function useThesisPresentationSession({
   cloudSttConfigured,
 }: {
   prep: ThesisPrepareResponse
-  onNavigateResults: () => void
+  onNavigateResults: () => void | Promise<void>
   onPresentationComplete: (result: ThesisPresentationCompleteResponse, transcript: string) => void
   getTranscript: () => string
   getDeliveryExtras: () => { avg_wpm: number | null; filler_count: number; presage_degraded?: boolean }
@@ -62,7 +62,6 @@ export function useThesisPresentationSession({
   const [started, setStarted] = useState(false)
   const [seconds, setSeconds] = useState(0)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [generatingReport, setGeneratingReport] = useState(false)
 
   const durationSec = prep.presentation_duration_sec
   const deliverySamplesRef = useRef<DeliverySamplePayload[]>([])
@@ -142,7 +141,6 @@ export function useThesisPresentationSession({
       completeInFlightRef.current = true
       setFlow('PRESENTATION_SUBMIT')
       setSubmitError(null)
-      setGeneratingReport(true)
 
       const sessionId = getStoredSessionId()
       const elapsed = secondsRef.current
@@ -180,14 +178,13 @@ export function useThesisPresentationSession({
         })
         setFlow('DONE')
         if (result.end_session || result.skip_qa) {
-          onNavigateResults()
+          await onNavigateResults()
           return
         }
         onPresentationComplete(result, transcript)
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Could not save presentation'
         setSubmitError(message)
-        setGeneratingReport(false)
         completeInFlightRef.current = false
         setFlow('PRESENTING')
       }
@@ -228,7 +225,6 @@ export function useThesisPresentationSession({
     seconds,
     durationSec,
     submitError,
-    generatingReport,
     startPresentation,
     completePresentation,
     attachRecorder,

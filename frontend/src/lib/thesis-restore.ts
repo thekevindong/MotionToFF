@@ -15,11 +15,13 @@ export function thesisPrepFromSettings(
   if (typeof presentationSec !== 'number' || typeof qaSec !== 'number') return null
   const characterId = settings.character_id?.trim()
   if (!characterId) return null
+  const voiceGender = settings.committee_voice_gender === 'male' ? 'male' : 'female'
   return {
     thesis_pack: pack as ThesisPackId,
     presentation_duration_sec: presentationSec,
     qa_duration_sec: qaSec,
     character_id: characterId,
+    committee_voice_gender: voiceGender,
     defense_document_id: defenseId,
     defense_filename: settings.defense_filename?.trim() || 'defense.txt',
     defense_text_preview: settings.defense_text_preview?.trim() || '',
