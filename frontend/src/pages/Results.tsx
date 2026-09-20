@@ -38,7 +38,7 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   const mode = summary?.mode ?? 'Salary Negotiation'
   const opponent = summary?.opponent ?? 'HR Lead'
   const tone = summary?.tone ?? 'Strict & Harsh'
-  const img = summary?.opponentImg ?? '/characters/hr-lead.png'
+  const img = summary?.opponentImg ?? '/images/hr/neutral-0.png'
   const duration = summary ? fmtDuration(summary.durationSec) : '—'
 
   const [state, setState] = useState<LoadState>({ status: 'loading' })

@@ -13,6 +13,7 @@ import {
 import { useBrowserSpeechCapture } from '../hooks/use-browser-speech-capture'
 import { useComposureReactions, useInterjectDevShortcut } from '../hooks/use-composure-reactions'
 import { useComposureSampler } from '../hooks/use-composure-sampler'
+import { stageBackgroundUrl } from '../config/stage-backgrounds'
 import { stageOpponentSrc, useCharacterExpression } from '../hooks/use-character-expression'
 import { useFaceComposure } from '../hooks/use-face-composure'
 import { useInterviewMachine } from '../hooks/use-interview-machine'
@@ -31,6 +32,7 @@ import {
   postTurn,
   uploadDocument,
 } from '../lib/api'
+import type { TurnResponse } from '../lib/api-types'
 import {
   clearPrepComplete,
   isLiveStudioPath,
@@ -47,6 +49,10 @@ import { StudioPrep } from './StudioPrep'
 import './Setup.css'
 
 const CONTEXT_FILE_EXT = new Set(['.pdf', '.docx', '.txt'])
+
+function turnRequestsReportEnd(data: TurnResponse): boolean {
+  return Boolean(data.end_session || data.next_question.end_session)
+}
 
 function initialSessionDurationSec(): number {
   const fromDefaults = readPrepDefaults().sessionDurationSec
@@ -76,6 +82,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const sessionTimeUpPendingRef = useRef(false)
   const secondsRef = useRef(0)
   const endSessionRef = useRef<() => void>(() => {})
+  const sessionEndFallbackRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const playTimedSessionCloseRef = useRef<() => Promise<void>>(async () => {})
   const [statsOpen, setStatsOpen] = useState(true)
   const [micOn, setMicOn] = useState(true)
@@ -199,11 +206,22 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
           return
         }
         setCurrentQuestion(data.next_question.text)
-        if (data.end_session) {
+        if (turnRequestsReportEnd(data)) {
           sessionClosingRef.current = true
           setSessionClosing(true)
+          const goToReport = () => {
+            if (sessionEndFallbackRef.current !== null) {
+              window.clearTimeout(sessionEndFallbackRef.current)
+              sessionEndFallbackRef.current = null
+            }
+            endSessionRef.current()
+          }
+          sessionEndFallbackRef.current = window.setTimeout(() => {
+            if (sessionClosingRef.current) goToReport()
+          }, 90_000)
           askRef.current(data.next_question.text, {
-            onSpoken: () => endSessionRef.current(),
+            holdFloor: true,
+            onSpoken: goToReport,
           })
           return
         }
@@ -315,7 +333,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   })
 
   const playMainQuestion = useCallback(
-    (text: string, options?: { onSpoken?: () => void }) => {
+    (text: string, options?: { onSpoken?: () => void; holdFloor?: boolean }) => {
       setInterjectionCaption(null)
       setLastInterjectionTrigger(null)
       ask(text, options)
@@ -606,6 +624,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setLastInterjectionTrigger(null)
     setDeliveryMood('neutral')
     setDevForceStress(interjectDevMode())
+    if (sessionEndFallbackRef.current !== null) {
+      window.clearTimeout(sessionEndFallbackRef.current)
+      sessionEndFallbackRef.current = null
+    }
     sessionClosingRef.current = false
     setSessionClosing(false)
     setSessionTimeUpPending(false)
@@ -697,6 +719,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }
 
   const endSession = useCallback(async () => {
+    if (sessionEndFallbackRef.current !== null) {
+      window.clearTimeout(sessionEndFallbackRef.current)
+      sessionEndFallbackRef.current = null
+    }
     finish()
     stop()
     browserSpeech.stop()
@@ -823,6 +849,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     sessionLive,
     expressionSrc,
   )
+  const stageBackgroundSrc = stageBackgroundUrl(modeId ?? 'salary', characterId as CharacterId | null)
 
   const aiCaptionLine =
     sessionLive && (interjectionCaption ?? currentQuestion) ? interjectionCaption ?? currentQuestion : null
@@ -887,6 +914,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         presageMetrics={presageMetrics}
         presageStatus={presageStatus}
         opponentImg={opponentImg}
+        stageBackgroundSrc={stageBackgroundSrc}
         aiCaptionLine={aiCaptionLine}
         aiCaptionInterjection={aiCaptionInterjection}
         userCaption={showUserCaptions ? stageUserCaption : ''}

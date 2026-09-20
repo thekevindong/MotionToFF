@@ -89,7 +89,7 @@ function HeroShowcase({ onPlay }: { onPlay: () => void }) {
           </div>
 
           <div className="stage-speaker">
-            <img src="/characters/hr-lead.png" alt="" />
+            <img src="/images/hr/neutral-0.png" alt="" />
             <div className="stage-caption">
               <span className="stage-name">Dana — HR Lead</span>
               <div className="stage-wave">

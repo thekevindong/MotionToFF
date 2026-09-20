@@ -23,3 +23,10 @@ def test_parse_turn_json_does_not_speak_braces():
     assert end is True
     assert "{" not in spoken
     assert spoken
+
+
+def test_parse_turn_json_camel_case_end_session():
+    raw = '{"spoken": "We are aligned — thank you.", "endSession": true}'
+    spoken, end = _parse_turn_json(raw)
+    assert end is True
+    assert "aligned" in spoken

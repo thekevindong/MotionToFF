@@ -321,11 +321,29 @@ export function useInterviewMachine({
 
       setSpeakingPhase('loading')
 
-      synthesizeSpeech(text)
+      const line = (text || '').trim()
+      if (!line) {
+        setSpeakingPhase('idle')
+        onDone?.()
+        return
+      }
+
+      synthesizeSpeech(line)
 
         .then(async (buf: ArrayBuffer) => {
 
           if (token !== speakTokenRef.current) return
+
+          const finish = () => {
+            if (token !== speakTokenRef.current) return
+            setSpeakingPhase('idle')
+            onDone?.()
+          }
+
+          if (!buf.byteLength) {
+            finish()
+            return
+          }
 
           const url = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }))
 
@@ -341,14 +359,16 @@ export function useInterviewMachine({
 
             if (audioRef.current === audio) audioRef.current = null
 
-            if (token === speakTokenRef.current) {
+            finish()
 
-              setSpeakingPhase('idle')
+          }
 
-              onDone?.()
-
-            }
-
+          audio.onerror = () => {
+            URL.revokeObjectURL(url)
+            if (audioRef.current === audio) audioRef.current = null
+            if (token !== speakTokenRef.current) return
+            stopPlaybackOnly()
+            speakWithBrowser(line, token, finish)
           }
 
           try {
@@ -361,17 +381,7 @@ export function useInterviewMachine({
 
             stopPlaybackOnly()
 
-            speakWithBrowser(text, token, () => {
-
-              if (token === speakTokenRef.current) {
-
-                setSpeakingPhase('idle')
-
-                onDone?.()
-
-              }
-
-            })
+            speakWithBrowser(line, token, finish)
 
           }
 
@@ -381,7 +391,7 @@ export function useInterviewMachine({
 
           if (token !== speakTokenRef.current) return
 
-          speakWithBrowser(text, token, () => {
+          speakWithBrowser(line, token, () => {
 
             if (token === speakTokenRef.current) {
 
@@ -413,7 +423,10 @@ export function useInterviewMachine({
 
   const ask = useCallback(
 
-    (question: string, options?: { onSpoken?: () => void }) => {
+    (
+      question: string,
+      options?: { onSpoken?: () => void; /** Keep floor closed after TTS (session wrap-up). */ holdFloor?: boolean },
+    ) => {
 
       stopRecording()
 
@@ -427,7 +440,9 @@ export function useInterviewMachine({
 
       speak(question, () => {
 
-        setState((s) => (s === 'ASKING' ? 'LISTENING' : s))
+        if (!options?.holdFloor) {
+          setState((s) => (s === 'ASKING' ? 'LISTENING' : s))
+        }
 
         options?.onSpoken?.()
 

@@ -1,6 +1,6 @@
 /** Shapes matching FastAPI responses (see handoff.md). */
 
-export type InterviewerLine = { role: string; text: string }
+export type InterviewerLine = { role: string; text: string; end_session?: boolean }
 
 export type RubricScores = {
   structure: number

@@ -27,12 +27,54 @@ MOCK_SALARY_QUESTIONS = [
 ]
 
 CHARACTER_PERSONAS: dict[str, str] = {
-    "recruiter": """You are the University Recruiter in a live salary negotiation practice session.
-Tone: warm and encouraging. Acknowledge preparation, ask clarifying questions gently, and guide the candidate toward a realistic offer without being adversarial.""",
-    "manager": """You are the Senior Manager (hiring manager) in a live salary negotiation practice session.
-Tone: formal and structure-focused. Expect clear reasoning, benchmarks, and trade-offs. Keep pace professional and slightly reserved — never dismissive or angry.""",
-    "hr": """You are the HR Lead (compensation & policy) in a live salary negotiation practice session.
-Tone: professional and budget-aware. Question numbers with policy context and calm firmness — not hostility, sarcasm, or impatience.""",
+    "recruiter": """You are Alex Rivera, the University Recruiter in a live salary negotiation practice session.
+You are on the candidate's side in spirit — you want them to land a fair offer and look good to the hiring team.
+
+Personality (make this obvious in every line):
+- Warm, upbeat, conversational; use "we" and "let's" often.
+- Celebrate specifics ("that's a strong anchor", "good that you came prepared").
+- Frame pushback as coaching: help them sharpen the ask before it goes to the manager or HR.
+- Curious and patient; you rarely shut doors — you explore options (start date, level, benefits, signing).
+
+Negotiation focus: ranges and expectations, what would make them say yes, competing offers (without grilling), flexibility, and realistic first-offer framing.
+
+Voice examples (vary wording; do not repeat verbatim every turn):
+- "I love that you're thinking this through — what range would feel fair to you?"
+- "Help me understand what matters most besides base so I can advocate internally."
+
+Do NOT sound corporate-cold, interrogative, or policy-heavy — that is HR's lane. Stay encouraging even when nudging them down.""",
+    "manager": """You are Jordan Park, the Senior Manager (hiring manager) in a live salary negotiation practice session.
+You own the role, the team, and whether the candidate's level matches the work — compensation must follow that story.
+
+Personality (make this obvious in every line):
+- Formal, measured, and precise; complete sentences, minimal small talk.
+- Reserved warmth — respect is shown through attention to detail, not cheerleading.
+- Skeptical in a professional way: ask for logic, evidence, and trade-offs.
+- You calibrate level, scope, impact, and market for THIS role — not generic confidence.
+
+Negotiation focus: justification vs. team band, outcomes and scope that merit the number, leveling, equity/bonus trade-offs, and what you'd need to see to go higher.
+
+Voice examples (vary wording; do not repeat verbatim every turn):
+- "Walk me through how you arrived at that figure — what benchmarks are you using?"
+- "If we held base, what would you need in scope or title to make that work?"
+
+Do NOT sound like a buddy recruiter or a policy robot — you care about business impact and internal equity on the team.""",
+    "hr": """You are Elena Vasquez, the HR Lead (compensation & policy) in a live salary negotiation practice session.
+You represent the company's pay framework, approvals, and risk — friendly on the surface, immovable on numbers without a case.
+
+Personality (make this obvious in every line):
+- Direct, economical speech; shorter sentences than the recruiter, less narrative than the manager.
+- Calm firmness: cite bands, grades, approval paths, and "what finance will sign."
+- You are not cruel — but you are the hardest stop. Push back clearly when the ask is above band.
+- Offer structured outs: bonus, equity, sign-on, start date, review timing — not vague hope.
+
+Negotiation focus: comp bands and level codes, internal parity, defensibility to finance, exceptions process, and explicit trade packages.
+
+Voice examples (vary wording; do not repeat verbatim every turn):
+- "For this level our approved band tops out around X — what in your ask is non-negotiable?"
+- "I can take a case upstairs if you give me one lever to flex and one to hold."
+
+Do NOT sound bubbly, mentoring, or impact-story-focused — that is recruiter/manager territory. No sarcasm, shouting, or personal insults.""",
 }
 
 TONE_GUARDRAILS = """This is a practice session for the candidate's growth — default to respectful, neutral-warm professionalism.
@@ -91,6 +133,10 @@ FOLLOWUP_SUFFIX = (
 )
 SALARY_FOLLOWUP_SUFFIX = (
     "\n\nBrief acknowledgment + one salary negotiation question (~35–55 words total)."
+)
+JSON_TURN_REMINDER = (
+    '\n\nReply with ONLY JSON: {"spoken": string, "end_session": boolean}. '
+    "Set end_session true when wrapping up (no new question)."
 )
 
 
@@ -361,15 +407,29 @@ def _looks_like_json_turn_payload(text: str) -> bool:
     return '"spoken"' in lowered or '"end_session"' in lowered
 
 
+def _end_session_flag(obj: dict[str, Any] | None, raw: str) -> bool:
+    if obj is not None:
+        for key in ("end_session", "endSession"):
+            val = obj.get(key)
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str) and val.strip().lower() in ("true", "1", "yes"):
+                return True
+    if re.search(r'"end_session"\s*:\s*true', raw, flags=re.IGNORECASE):
+        return True
+    if re.search(r'"endSession"\s*:\s*true', raw, flags=re.IGNORECASE):
+        return True
+    return False
+
+
 def _parse_turn_json(raw: str) -> tuple[str, bool]:
     """Parse Gemini JSON turn; fall back to plain text (never TTS raw JSON)."""
     cleaned = _strip_markdown_json_fence(raw)
     obj = _decode_turn_json_object(cleaned)
-    end_session = False
+    end_session = _end_session_flag(obj, cleaned or raw or "")
     spoken = ""
 
     if obj is not None:
-        end_session = bool(obj.get("end_session", False))
         for key in ("spoken", "text", "message", "content"):
             value = obj.get(key)
             if isinstance(value, str) and value.strip():
@@ -528,7 +588,7 @@ def _gemini_next_turn(
             delivery_context, session_id
         )
         anchor = f"{SALARY_TURN_ANCHOR}\n\n" if _is_salary_scenario(session_id) else ""
-        body["input"] = f"{anchor}{answer}{suffix}"
+        body["input"] = f"{anchor}{answer}{suffix}{JSON_TURN_REMINDER}"
         body["previous_interaction_id"] = previous_id
     else:
         # No stored interaction (legacy session / mock fallback earlier) — start a new chain.

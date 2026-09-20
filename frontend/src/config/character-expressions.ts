@@ -9,6 +9,11 @@ export function expressionImageUrl(charId: CharacterId, mood: ExpressionMood, fr
   return `/images/${charId}/${prefix}-${frame}.png`
 }
 
+/** Default smiling cartoon portrait (prep cards, results, idle stage). */
+export function characterPortraitUrl(charId: CharacterId): string {
+  return expressionImageUrl(charId, 'neutral', 0)
+}
+
 export function isHardDirectorAction(action: string | undefined): boolean {
   // curveball is a topic shift, not hostility — only press_harder should read as "stern"
   return action === 'press_harder'

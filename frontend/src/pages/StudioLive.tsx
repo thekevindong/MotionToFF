@@ -254,6 +254,7 @@ export type StudioLiveProps = {
   presageMetrics: PresageMetricRow[]
   presageStatus: string
   opponentImg: string
+  stageBackgroundSrc: string
   aiCaptionLine: string | null
   aiCaptionInterjection?: boolean
   userCaption: string
@@ -292,6 +293,7 @@ export function StudioLive({
   presageMetrics,
   presageStatus,
   opponentImg,
+  stageBackgroundSrc,
   aiCaptionLine,
   aiCaptionInterjection = false,
   userCaption,
@@ -346,6 +348,14 @@ export function StudioLive({
 
       <div className="stage-wrap">
         <div className="stage" ref={stageRef}>
+          <img
+            className="stage-bg"
+            src={stageBackgroundSrc}
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+          />
+          <div className="stage-bg-scrim" aria-hidden="true" />
           <img className="stage-watermark" src="/brand/speakup-icon-white.png" alt="" aria-hidden="true" />
 
           {!statsOpen && (
