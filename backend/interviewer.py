@@ -30,10 +30,15 @@ CHARACTER_PERSONAS: dict[str, str] = {
     "recruiter": """You are the University Recruiter in a live salary negotiation practice session.
 Tone: warm and encouraging. Acknowledge preparation, ask clarifying questions gently, and guide the candidate toward a realistic offer without being adversarial.""",
     "manager": """You are the Senior Manager (hiring manager) in a live salary negotiation practice session.
-Tone: formal and structure-focused. Expect clear reasoning, benchmarks, and trade-offs. Keep pace professional and slightly reserved.""",
+Tone: formal and structure-focused. Expect clear reasoning, benchmarks, and trade-offs. Keep pace professional and slightly reserved — never dismissive or angry.""",
     "hr": """You are the HR Lead (compensation & policy) in a live salary negotiation practice session.
-Tone: strict and budget-conscious. Push back firmly on numbers, cite policy and bands, and stress business constraints.""",
+Tone: professional and budget-aware. Question numbers with policy context and calm firmness — not hostility, sarcasm, or impatience.""",
 }
+
+TONE_GUARDRAILS = """This is a practice session for the candidate's growth — default to respectful, neutral-warm professionalism.
+- Do NOT sound angry, annoyed, sarcastic, or impatient unless they were openly rude (rare).
+- Skepticism is fine; hostility is not. Push back with curiosity ("help me understand…") not judgment.
+- If live delivery signals show stress or low composure, ease up: shorter questions, warmer acknowledgment, no piling on."""
 
 SCENARIO_SALARY_ADDENDUM = """Scenario: salary negotiation for a job offer (not a generic behavioral interview).
 Focus on compensation expectations, justification, benefits, timing, and counters. After a brief acknowledgment, ask exactly ONE new negotiation question per turn unless the negotiation is clearly finished — then close warmly with end_session true."""
@@ -56,7 +61,9 @@ Avoid filler lectures and coaching tone. No bullet points or section labels."""
 
 SYSTEM_INSTRUCTION = f"""You are Maya Chen, a professional interviewer in a live practice mock interview.
 
-You own pacing and tone: push back when answers are vague, soften if they are stressed — always in character, never a coach or rubric judge.
+You own pacing and tone: ask for clarity when answers are vague, and soften when they sound stressed — always in character, never a coach or rubric judge.
+
+{TONE_GUARDRAILS}
 
 {CONCISE_SPOKEN_RULES}
 
@@ -80,6 +87,47 @@ FOLLOWUP_SUFFIX = (
 SALARY_FOLLOWUP_SUFFIX = (
     "\n\nBrief acknowledgment + one salary negotiation question (~35–55 words total)."
 )
+
+
+def _delivery_tone_appendix(delivery: dict[str, Any] | None) -> str:
+    """Presage + director pacing hint for the next Gemini line (not shown to candidate)."""
+    if not delivery:
+        return ""
+    action = str(delivery.get("director_action") or "follow_up").strip()
+    comp = delivery.get("composure")
+    comp_note = f"{float(comp):.2f}" if isinstance(comp, (int, float)) else "unknown"
+    rationale = str(delivery.get("director_rationale") or "").strip()
+
+    if action == "ease_off":
+        tone = (
+            "Delivery signals: composure is low (~"
+            + comp_note
+            + "). Be noticeably warmer and patient; no sharp pushback."
+        )
+    elif action == "press_harder":
+        tone = (
+            "Delivery signals: composure is strong (~"
+            + comp_note
+            + "). You may ask one respectful, challenging follow-up — stay professional, not harsh."
+        )
+    elif action == "curveball":
+        tone = (
+            "Delivery signals: comfortable session (~"
+            + comp_note
+            + "). Shift topic angle slightly while staying friendly."
+        )
+    else:
+        tone = (
+            "Delivery signals: composure ~"
+            + comp_note
+            + ". Standard supportive interview tone."
+        )
+
+    extra = f"\n\n[Session pacing — {tone}"
+    if rationale:
+        extra += f" ({rationale})"
+    extra += "]"
+    return extra
 
 
 def build_interviewer_context(session_id: str | None) -> str:
@@ -165,9 +213,10 @@ def _persona_instruction(session_id: str | None) -> str:
     if isinstance(character_id, str) and character_id in CHARACTER_PERSONAS:
         base = CHARACTER_PERSONAS[character_id]
         base = (
-            f"{base}\n\nYou control the live session: adjust tone (warm, firm, skeptical, impatient) based on "
-            "their answers — push back when they are vague, ease off if they are clearly stressed, and stay "
-            "fully in character. Never mention rubrics, scores, or AI.\n\n"
+            f"{base}\n\n{TONE_GUARDRAILS}\n\n"
+            "You control pacing: stay in character, but bias warm and professional. "
+            "Firm is OK; cold or angry is not. Ease off when they sound stressed. "
+            "Never mention rubrics, scores, Presage, or AI.\n\n"
             f"{CONCISE_SPOKEN_RULES}\n\n"
             "Never repeat a question already asked.\n\n"
             f"{TURN_OUTPUT_JSON_RULES}"
@@ -405,7 +454,11 @@ def _persist_interaction_id(session_id: str | None, interaction_id: str | None) 
 
 
 def _gemini_next_turn(
-    history: History, api_key: str, session_id: str | None = None
+    history: History,
+    api_key: str,
+    session_id: str | None = None,
+    *,
+    delivery_context: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     from repository import get_session_settings
 
@@ -431,7 +484,8 @@ def _gemini_next_turn(
         answer = _latest_candidate_answer(history)
         if not answer:
             raise ValueError("Turn history missing candidate answer")
-        body["input"] = f"{answer}{_followup_suffix(session_id)}"
+        suffix = _followup_suffix(session_id) + _delivery_tone_appendix(delivery_context)
+        body["input"] = f"{answer}{suffix}"
         body["previous_interaction_id"] = previous_id
     else:
         # No stored interaction (legacy session / mock fallback earlier) — start a new chain.
@@ -462,14 +516,24 @@ def opening_question(session_id: str) -> dict[str, str]:
     return line
 
 
-def next_turn(history: History, session_id: str | None = None) -> dict[str, str]:
+def next_turn(
+    history: History,
+    session_id: str | None = None,
+    *,
+    delivery_context: dict[str, Any] | None = None,
+) -> dict[str, str]:
     """Return the next interviewer line ({ role, text }). Uses Gemini when keyed."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         return _mock_next_turn(history, session_id=session_id)
 
     try:
-        return _gemini_next_turn(history, api_key, session_id=session_id)
+        return _gemini_next_turn(
+            history,
+            api_key,
+            session_id=session_id,
+            delivery_context=delivery_context,
+        )
     except Exception as exc:  # noqa: BLE001 — keep /turn green; log for debugging
         logger.warning("Gemini interviewer failed, using mock: %s", exc)
         return _mock_next_turn(history, session_id=session_id)
@@ -502,8 +566,8 @@ INTERJECTION_SYSTEM = """You are the interviewer in a live practice session (sal
 The candidate's live signals show elevated stress or low composure.
 
 Respond with exactly ONE short spoken line (1–2 sentences, under 35 words).
-Help them regroup: breathe, slow down, or clarify thinking — stay warm and in character.
-Do NOT ask a new rubric question. Do NOT give scores or long coaching. No bullet points."""
+Help them regroup: breathe, slow down, or clarify thinking — stay warm, calm, and in character.
+Never sound annoyed or disappointed. Do NOT ask a new interview question. No scores or lectures. No bullet points."""
 
 
 def _mock_interjection(trigger: str, session_id: str | None) -> str:

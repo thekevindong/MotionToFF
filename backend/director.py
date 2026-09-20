@@ -56,20 +56,47 @@ def parse_director_action(text: str) -> str:
     return DEFAULT_ACTION
 
 
+def _latest_candidate_answer(history: History) -> str:
+    for entry in reversed(history):
+        if entry.get("role") == "candidate":
+            text = str(entry.get("text", "")).strip()
+            if text:
+                return text
+    return ""
+
+
+def _answer_depth_signals(history: History) -> dict[str, Any]:
+    """Light transcript heuristics so pacing is not composure-only."""
+    answer = _latest_candidate_answer(history)
+    words = len(answer.split()) if answer else 0
+    return {
+        "answer_words": words,
+        "answer_substantive": words >= 22,
+        "answer_very_brief": words < 10 and bool(answer),
+    }
+
+
 def _local_decide(composure: float, history: History) -> DirectorDecision:
-    """Fast pacing signal for sprite UX — no LLM on the /turn hot path."""
-    if composure < 0.32:
+    """Fast pacing signal for sprite UX — blends Presage composure + last answer depth."""
+    comp = max(0.0, min(1.0, float(composure)))
+    signals = _answer_depth_signals(history)
+    turn_pairs = max(1, len(history) // 2)
+
+    if comp < 0.28 or (comp < 0.38 and signals["answer_very_brief"]):
         action = "ease_off"
-        rationale = "Candidate composure is low — ease pacing."
-    elif composure < 0.48:
+        rationale = "Low composure or a very thin answer — soften pacing."
+    elif comp < 0.42:
         action = "follow_up"
-        rationale = "Steady composure — standard follow-up."
-    elif composure > 0.78:
+        rationale = "Mild stress — steady, supportive follow-up."
+    elif comp > 0.86 and signals["answer_substantive"] and turn_pairs >= 2:
         action = "press_harder"
-        rationale = "Strong composure — press with a harder angle."
-    elif composure > 0.62:
+        rationale = "Strong composure and a substantive answer — one respectful challenge."
+    elif comp > 0.82 and turn_pairs >= 4 and signals["answer_substantive"]:
         action = "curveball"
-        rationale = "Comfortable candidate — vary the angle."
+        rationale = "Comfortable late in session — vary the angle once."
+    elif signals["answer_very_brief"] and comp < 0.55:
+        action = "follow_up"
+        rationale = "Brief answer under moderate stress — clarify without pressure."
     else:
         action = DEFAULT_ACTION
         rationale = "Neutral pacing — continue with a standard follow-up."
@@ -78,8 +105,9 @@ def _local_decide(composure: float, history: History) -> DirectorDecision:
         "action": action,
         "rationale": rationale,
         "input_snapshot": {
-            "composure": composure,
+            "composure": comp,
             "turn_count": len(history),
+            **signals,
         },
         "mock": True,
     }

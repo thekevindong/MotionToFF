@@ -10,7 +10,8 @@ export function expressionImageUrl(charId: CharacterId, mood: ExpressionMood, fr
 }
 
 export function isHardDirectorAction(action: string | undefined): boolean {
-  return action === 'press_harder' || action === 'curveball'
+  // curveball is a topic shift, not hostility — only press_harder should read as "stern"
+  return action === 'press_harder'
 }
 
 export function isSoftDirectorAction(action: string | undefined): boolean {

@@ -1,17 +1,17 @@
 /** Presage-driven interviewer interjections (mirror backend/composure_thresholds.py). */
 
 export const INTERJECT = {
-  stressHigh: 0.72,
-  composureLow: 0.38,
+  stressHigh: 0.78,
+  composureLow: 0.32,
   composureStrong: 0.8,
   eyeContactHigh: 0.75,
-  eyeContactLow: 0.42,
-  paceFastWpm: 168,
-  hrElevated: 100,
-  cooldownMs: 45_000,
+  eyeContactLow: 0.38,
+  paceFastWpm: 175,
+  hrElevated: 108,
+  cooldownMs: 50_000,
   maxInterjectsPerSession: 4,
   /** Samples at 1 Hz — sustained breach required */
-  sustainedSec: 3,
+  sustainedSec: 4,
   /** Sustained "strong presence" before opponent shows a warmer expression */
   pleasedSustainedSec: 4,
 } as const
