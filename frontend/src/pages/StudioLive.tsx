@@ -392,6 +392,7 @@ export function StudioLive({
       <div className="stage-wrap">
         <div className="stage" ref={stageRef}>
           <img
+            key={stageBackgroundSrc}
             className="stage-bg"
             src={stageBackgroundSrc}
             alt=""

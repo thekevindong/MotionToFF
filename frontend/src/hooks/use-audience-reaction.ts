@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 
 import {
-  AUDIENCE_ENGAGED_ENGAGEMENT,
-  AUDIENCE_ENGAGED_MAX_STRESS,
+  AUDIENCE_CLAP_COMPOSURE,
+  AUDIENCE_CLAP_ENGAGEMENT,
+  AUDIENCE_CLAP_MAX_STRESS,
   AUDIENCE_REACT_COOLDOWN_MS,
   AUDIENCE_REACT_HOLD_MS,
-  AUDIENCE_STRESS_CONSECUTIVE,
-  AUDIENCE_STRESS_THRESHOLD,
-  AUDIENCE_WARM_COMPOSURE,
-  AUDIENCE_WARM_ENGAGEMENT,
+  AUDIENCE_SAD_CONSECUTIVE,
+  AUDIENCE_SAD_STRESS,
 } from '../config/speaking-audience-thresholds'
 import {
   audienceStageUrl,
@@ -36,11 +35,16 @@ function pickReaction(sample: ComposureSample, stressStreak: number): AudienceRe
   const engagement = engagementFromSample(sample)
   const composure = sample.composure
 
-  if (stressStreak >= AUDIENCE_STRESS_CONSECUTIVE && stress >= AUDIENCE_STRESS_THRESHOLD) {
-    return 'tense'
+  if (stressStreak >= AUDIENCE_SAD_CONSECUTIVE && stress >= AUDIENCE_SAD_STRESS) {
+    return 'sad'
   }
-  if (composure >= AUDIENCE_WARM_COMPOSURE && engagement >= AUDIENCE_WARM_ENGAGEMENT) return 'warm'
-  if (engagement >= AUDIENCE_ENGAGED_ENGAGEMENT && stress < AUDIENCE_ENGAGED_MAX_STRESS) return 'engaged'
+  if (
+    composure >= AUDIENCE_CLAP_COMPOSURE &&
+    engagement >= AUDIENCE_CLAP_ENGAGEMENT &&
+    stress < AUDIENCE_CLAP_MAX_STRESS
+  ) {
+    return 'clap'
+  }
   return null
 }
 
@@ -69,7 +73,7 @@ export function useAudienceReaction({
     if (!enabled || basePhase !== 'house' || !sample || overlay) return
 
     const stress = stressFromSample(sample)
-    if (stress >= AUDIENCE_STRESS_THRESHOLD) {
+    if (stress >= AUDIENCE_SAD_STRESS) {
       stressStreakRef.current += 1
     } else {
       stressStreakRef.current = 0

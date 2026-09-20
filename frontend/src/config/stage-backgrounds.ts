@@ -3,7 +3,8 @@ import type { Character } from './modes'
 export type CharacterId = Character['id']
 
 export type AudiencePhase = 'empty' | 'house' | 'reacting'
-export type AudienceReaction = 'engaged' | 'tense' | 'warm'
+/** Pegasus-driven audience plates (served from public/backgrounds/auditorium). */
+export type AudienceReaction = 'clap' | 'sad'
 
 const AUDITORIUM_BASE = '/backgrounds/auditorium'
 
@@ -17,9 +18,8 @@ export function audienceStageUrl(
   }
   if (phase === 'reacting' && reaction) {
     const reactionFile: Record<AudienceReaction, string> = {
-      engaged: 'aud_react_engaged.png',
-      tense: 'aud_react_tense.png',
-      warm: 'aud_react_warm.png',
+      clap: 'aud_filled_clap.png',
+      sad: 'aud_filled_sad.png',
     }
     return `${AUDITORIUM_BASE}/${reactionFile[reaction]}`
   }
