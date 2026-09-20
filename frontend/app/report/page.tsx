@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react"
 import { ArrowLeft } from "lucide-react"
 import type { SessionTurn } from "@/lib/api-types"
 import { getSession } from "@/lib/api"
+import { getStoredSessionId } from "@/lib/session-storage"
 import { drawComposureChart } from "@/lib/draw-composure-chart"
 
 type LoadState =
@@ -18,7 +19,8 @@ export default function ReportPage() {
 
   useEffect(() => {
     let cancelled = false
-    getSession()
+    const sessionId = getStoredSessionId()
+    getSession(sessionId ?? undefined)
       .then((data) => {
         if (!cancelled) {
           setState({ status: "ready", turns: data.turns ?? [] })

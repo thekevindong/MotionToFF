@@ -10,6 +10,7 @@ import { useComposureSampler } from "@/hooks/use-composure-sampler"
 import { useFaceComposure, type FaceMetrics } from "@/hooks/use-face-composure"
 import { useInterviewMachine } from "@/hooks/use-interview-machine"
 import { getHealth, getSession, postTurn } from "@/lib/api"
+import { getStoredSessionId } from "@/lib/session-storage"
 
 const STATE_LABELS: Record<TurnState, string> = {
   IDLE: "Ready to join",
@@ -22,7 +23,8 @@ const STATE_LABELS: Record<TurnState, string> = {
 const INTERVIEWER_NAME = "Maya Chen"
 
 export default function InterviewPage() {
-  const sessionId = useMemo(() => `s_${Date.now().toString(36)}`, [])
+  const apiSessionId = useMemo(() => getStoredSessionId(), [])
+  const composureSessionId = useMemo(() => `s_${Date.now().toString(36)}`, [])
   const [turnCount, setTurnCount] = useState(0)
   const [currentQuestionText, setCurrentQuestionText] = useState<string | null>(null)
   const [transcript, setTranscript] = useState("")
@@ -67,7 +69,7 @@ export default function InterviewPage() {
       }
 
       try {
-        const data = await postTurn(text)
+        const data = await postTurn(text, apiSessionId ?? undefined)
         setTurnCount((n) => n + 1)
         setCurrentQuestionText(data.next_question.text)
         ask(data.next_question.text)
@@ -83,7 +85,7 @@ export default function InterviewPage() {
   const { ready: faceReady, getMetrics } = useFaceComposure(videoRef, sessionActive)
   const { latest } = useComposureSampler({
     active: sessionActive,
-    sessionId,
+    sessionId: composureSessionId,
     questionId,
     getMetrics,
   })
@@ -121,7 +123,7 @@ export default function InterviewPage() {
     setApiError(null)
     try {
       await getHealth()
-      const session = await getSession()
+      const session = await getSession(apiSessionId ?? undefined)
       setApiOk(true)
       setCurrentQuestionText(session.current_question.text)
       ask(session.current_question.text)

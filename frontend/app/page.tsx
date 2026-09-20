@@ -44,7 +44,7 @@ export default function Page() {
 
           <div className="mt-10 flex flex-wrap items-center gap-4">
             <Link
-              href="/interview"
+              href="/setup"
               className="inline-flex items-center gap-2 rounded-full bg-foreground px-6 py-3 text-sm font-medium text-background transition-opacity hover:opacity-90"
             >
               Start a mock interview

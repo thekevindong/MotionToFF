@@ -29,9 +29,35 @@ export type SessionTurn = {
   next_question?: InterviewerLine
 }
 
+export type SessionDocument = {
+  id: string
+  session_id: string
+  filename: string
+  mime: string
+  extracted_text_length: number
+  created_at: string
+}
+
 export type SessionResponse = {
+  session_id?: string
+  job_title?: string | null
   current_question: InterviewerLine
   turns: SessionTurn[]
+  documents?: SessionDocument[]
+}
+
+export type CreateSessionResponse = {
+  session_id: string
+  job_title: string | null
+}
+
+export type UploadDocumentResponse = {
+  id: string
+  session_id: string
+  filename: string
+  mime: string
+  extracted_text_length: number
+  created_at: string
 }
 
 export type TurnResponse = {
