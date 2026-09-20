@@ -336,6 +336,12 @@ export function buildReportStrengths(
   cap = REPORT_FEEDBACK_CAP,
   options?: { scenarioId?: string; settings?: SessionPersonaSettings; sessionReport?: SessionReportPayload },
 ): string[] {
+  if (options?.scenarioId === 'thesis') {
+    const thesisStrengths = options?.sessionReport?.thesis?.strengths
+    if (Array.isArray(thesisStrengths) && thesisStrengths.length > 0) {
+      return thesisStrengths.slice(0, cap)
+    }
+  }
   const fromRubric = options?.sessionReport?.rubric?.evidence?.filter((line) => line.trim()) ?? []
   const fromCatalog = pickTranscriptStrengths(turns, cap, options)
   const merged: string[] = []
@@ -347,6 +353,9 @@ export function buildReportStrengths(
     merged.push(trimmed)
     if (merged.length >= cap) break
   }
+  if (options?.scenarioId === 'thesis' && merged.length === 0) {
+    return []
+  }
   return merged.length ? merged : fromCatalog
 }
 
@@ -355,6 +364,12 @@ export function buildReportImprovements(
   cap = REPORT_FEEDBACK_CAP,
   options?: { scenarioId?: string; settings?: SessionPersonaSettings; sessionReport?: SessionReportPayload },
 ): string[] {
+  if (options?.scenarioId === 'thesis') {
+    const thesisImprovements = options?.sessionReport?.thesis?.improvements
+    if (Array.isArray(thesisImprovements) && thesisImprovements.length > 0) {
+      return thesisImprovements.slice(0, cap)
+    }
+  }
   const flags = options?.sessionReport?.rubric?.red_flags ?? []
   const fromFlags = flags.map((f) => formatRedFlag(f)).filter(Boolean)
   const fromCatalog = pickTranscriptImprovements(turns, cap, options)
@@ -365,6 +380,9 @@ export function buildReportImprovements(
     seen.add(line)
     merged.push(line)
     if (merged.length >= cap) break
+  }
+  if (options?.scenarioId === 'thesis' && merged.length === 0) {
+    return []
   }
   return merged.length ? merged : fromCatalog
 }

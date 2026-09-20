@@ -275,6 +275,7 @@ def _session_payload(session_id: str) -> dict[str, Any]:
             "thesis_pack",
             "presentation_duration_sec",
             "qa_duration_sec",
+            "qa_question_count",
             "defense_document_id",
             "defense_filename",
             "defense_text_preview",
@@ -436,6 +437,7 @@ class ThesisPrepareResponse(BaseModel):
     thesis_pack: str
     presentation_duration_sec: int
     qa_duration_sec: int
+    qa_question_count: int
     character_id: str
     committee_voice_gender: str
     defense_document_id: str
@@ -848,14 +850,17 @@ async def _execute_turn(session_id: str, body: TurnRequest) -> dict[str, Any]:
     composure_value = await asyncio.to_thread(sample_composure, answer)
     decision = decide(composure_value, turn_history)
     settings = get_session_settings(session_id)
-    qa_time_up = bool(body.qa_expired) or (
-        body.qa_time_remaining_sec is not None and body.qa_time_remaining_sec <= 0
+    from thesis import thesis_qa_closing_after_this_answer
+
+    thesis_qa_close = (
+        settings.get("scenario_id") == "thesis"
+        and thesis_qa_closing_after_this_answer(records, settings)
     )
-    if settings.get("scenario_id") == "thesis" and qa_time_up:
+    if thesis_qa_close:
         closing = generate_session_closing(
             session_id,
-            elapsed_sec=body.qa_time_remaining_sec,
-            duration_sec=settings.get("qa_duration_sec"),
+            elapsed_sec=None,
+            duration_sec=settings.get("qa_question_count"),
         )
         closing_text = str(closing.get("text", "")).strip() or (
             "Thank you — that concludes our questions. You can review your report when you're ready."
@@ -865,7 +870,7 @@ async def _execute_turn(session_id: str, body: TurnRequest) -> dict[str, Any]:
             "text": closing_text,
             "end_session": True,
         }
-        set_session_setting(session_id, "qa_ended_by", "timer")
+        set_session_setting(session_id, "qa_ended_by", "question_quota")
     else:
         next_question = await asyncio.to_thread(
             next_turn,

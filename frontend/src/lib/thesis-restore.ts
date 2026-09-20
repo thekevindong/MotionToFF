@@ -12,7 +12,10 @@ export function thesisPrepFromSettings(
   if (!defenseId) return null
   const presentationSec = settings.presentation_duration_sec
   const qaSec = settings.qa_duration_sec
+  const qaCount = settings.qa_question_count
   if (typeof presentationSec !== 'number' || typeof qaSec !== 'number') return null
+  const qaQuestionCount =
+    typeof qaCount === 'number' && qaCount > 0 ? qaCount : pack === 'long' ? 5 : 3
   const characterId = settings.character_id?.trim()
   if (!characterId) return null
   const voiceGender = settings.committee_voice_gender === 'male' ? 'male' : 'female'
@@ -20,6 +23,7 @@ export function thesisPrepFromSettings(
     thesis_pack: pack as ThesisPackId,
     presentation_duration_sec: presentationSec,
     qa_duration_sec: qaSec,
+    qa_question_count: qaQuestionCount,
     character_id: characterId,
     committee_voice_gender: voiceGender,
     defense_document_id: defenseId,

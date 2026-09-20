@@ -947,7 +947,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         const pack = thesisPackById(thesisPackId)
         if (!pack) return false
         const defenseFile = pendingContextFiles[0]
-        const durationSec = pack.presentationSec + pack.qaSec
+        const durationSec = pack.presentationSec + pack.qaEstimateSec
         const { session_id } = await createSession({
           jobTitle: `Thesis defense — ${defenseFile.name}`,
           scenarioId: 'thesis',
@@ -1034,7 +1034,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         mode.id === 'speaking'
           ? speakingDurationSeconds(speakingDurationId)
           : mode.id === 'thesis' && thesisPack
-            ? thesisPack.presentationSec + thesisPack.qaSec
+            ? thesisPack.presentationSec + thesisPack.qaEstimateSec
             : sessionDurationSec,
       speechId: mode.id === 'speaking' ? speechId ?? undefined : undefined,
       speakingDurationId: mode.id === 'speaking' ? speakingDurationId : undefined,
@@ -1174,9 +1174,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setThesisPackId(id)
     const pack = thesisPackById(id)
     if (pack) {
-      setSessionDurationSec(pack.presentationSec + pack.qaSec)
+      setSessionDurationSec(pack.presentationSec + pack.qaEstimateSec)
     }
-    writePrepDefaults({ thesisPackId: id, sessionDurationSec: pack ? pack.presentationSec + pack.qaSec : undefined })
+    writePrepDefaults({
+      thesisPackId: id,
+      sessionDurationSec: pack ? pack.presentationSec + pack.qaEstimateSec : undefined,
+    })
   }
 
   const onThesisDefenseFilePicked = (picked: FileList | null) => {
@@ -1231,7 +1234,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     }
     if (m.id === 'thesis') {
       const pack = thesisPackById(thesisPackId)
-      if (pack) setSessionDurationSec(pack.presentationSec + pack.qaSec)
+      if (pack) setSessionDurationSec(pack.presentationSec + pack.qaEstimateSec)
     }
     writePrepDefaults({ modeId: m.id })
   }

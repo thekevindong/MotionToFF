@@ -54,7 +54,7 @@ function CameraTile({
   videoRef: RefObject<HTMLVideoElement | null>
   stageRef: RefObject<HTMLDivElement | null>
   variant?: 'floating' | 'docked'
-  defaultCorner?: 'top-right' | 'bottom-right'
+  defaultCorner?: 'top-center' | 'top-right' | 'bottom-right'
 }) {
   const docked = variant === 'docked'
   const tileRef = useRef<HTMLDivElement>(null)
@@ -97,7 +97,11 @@ function CameraTile({
     const w = el.offsetWidth || width
     const h = el.offsetHeight || width * 0.72
     const y = defaultCorner === 'bottom-right' ? stage.clientHeight - h - 16 : 16
-    setPos(clamp(stage.clientWidth - w - 16, y))
+    const x =
+      defaultCorner === 'top-center'
+        ? (stage.clientWidth - w) / 2
+        : stage.clientWidth - w - 16
+    setPos(clamp(x, y))
   }, [defaultCorner, docked, pos, clamp, width, stageRef])
 
   useEffect(() => {
@@ -442,7 +446,7 @@ export function StudioLive({
               onToggleVideo={onToggleVideo}
               videoRef={videoRef}
               stageRef={stageRef}
-              defaultCorner="bottom-right"
+              defaultCorner="top-center"
             />
           )}
           <img className="stage-watermark" src="/brand/speakup-icon-white.png" alt="" aria-hidden="true" />

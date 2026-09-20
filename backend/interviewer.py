@@ -90,7 +90,7 @@ SCENARIO_THESIS_ADDENDUM = """Scenario: thesis / dissertation defense committee 
 The candidate uploaded a defense document — every question must be answerable from that text only.
 Anchor each question in the upload: quote or paraphrase a specific claim, method, result, or limitation from their defense file.
 Probe methods, validity, contributions, and limitations. No compensation, job-offer, or HR policy framing.
-After a brief acknowledgment, ask exactly ONE sharp committee question per turn unless Q&A time is up — then close warmly with end_session true."""
+After a brief acknowledgment, ask exactly ONE sharp committee question per turn unless the configured question quota is reached — then close warmly with end_session true."""
 
 SALARY_TURN_ANCHOR = (
     "[Scenario lock: salary/compensation negotiation only — no generic behavioral interview questions.]"

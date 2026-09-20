@@ -10,6 +10,7 @@ import { useComposureSampler } from '../hooks/use-composure-sampler'
 import { useFaceComposure } from '../hooks/use-face-composure'
 import { useInterviewMachine } from '../hooks/use-interview-machine'
 import { useMediaStream } from '../hooks/use-media-stream'
+import { useVoiceActivity } from '../hooks/use-voice-activity'
 import { presageStatusLabel, usePresageMetrics } from '../hooks/use-presage-metrics'
 import { usePresageVitals } from '../hooks/use-presage-vitals'
 import type { ThesisPresentationFlow } from '../hooks/use-thesis-session'
@@ -57,6 +58,15 @@ function turnRequestsReportEnd(data: TurnResponse): boolean {
   return Boolean(data.end_session || data.next_question.end_session)
 }
 
+function randomCommitteeVoice(): CharacterGender {
+  return Math.random() < 0.5 ? 'male' : 'female'
+}
+
+function qaQuestionCountFromPrep(prep: ThesisPrepareResponse): number {
+  if (prep.qa_question_count > 0) return prep.qa_question_count
+  return prep.thesis_pack === 'long' ? 5 : 3
+}
+
 type Props = {
   mode: Mode
   prep: ThesisPrepareResponse
@@ -77,9 +87,7 @@ export function ThesisLive({
   const [sessionPhase, setSessionPhase] = useState<'presentation' | 'qa'>('presentation')
   const [handoffLine, setHandoffLine] = useState<string | null>(null)
   const [qaStarted, setQaStarted] = useState(false)
-  const [qaSeconds, setQaSeconds] = useState(0)
-  const [qaTimeUpPending, setQaTimeUpPending] = useState(false)
-  const qaTimeUpPendingRef = useRef(false)
+  const [qaAnswersCompleted, setQaAnswersCompleted] = useState(0)
   const [currentQuestion, setCurrentQuestion] = useState('')
   const [turnError, setTurnError] = useState<string | null>(null)
   const [transcribing, setTranscribing] = useState(false)
@@ -102,12 +110,13 @@ export function ThesisLive({
   const transcriptRef = useRef('')
   const deliveryExtrasRef = useRef({ avg_wpm: null as number | null, filler_count: 0, presage_degraded: false })
   const presageDegradedRef = useRef(false)
-  const qaSecondsRef = useRef(0)
+  const processingQaRef = useRef(false)
+  const qaStateRef = useRef<TurnState>('IDLE')
+  const speakingPhaseRef = useRef<'idle' | 'loading' | 'audible'>('idle')
+  const submitQaAnswerRef = useRef<() => Promise<void>>(async () => {})
 
-  const qaDurationSec = prep.qa_duration_sec
-  const qaRemaining = Math.max(0, qaDurationSec - qaSeconds)
-
-  const committeeVoiceGender: CharacterGender =
+  const qaQuestionCount = qaQuestionCountFromPrep(prep)
+  const handoffVoiceGender: CharacterGender =
     prep.committee_voice_gender === 'male' ? 'male' : 'female'
 
   const navigateResultsWithSession = useCallback(async () => {
@@ -127,7 +136,7 @@ export function ThesisLive({
       opponentRole: 'Thesis defense',
       tone: 'Voice from audience',
       opponentImg: '/brand/speakup-icon-white.png',
-      durationSec: qaSecondsRef.current + prep.presentation_duration_sec,
+      durationSec: prep.presentation_duration_sec,
     })
     onNavigateResults()
   }, [mode.title, onNavigateResults, prep.presentation_duration_sec])
@@ -146,7 +155,7 @@ export function ThesisLive({
       setCurrentQuestion(start.question.text)
       setAiCaption(start.question.text)
       setQaStarted(true)
-      setQaSeconds(0)
+      setQaAnswersCompleted(0)
     } catch (err) {
       setTurnError(err instanceof Error ? err.message : 'Could not start Q&A')
     }
@@ -174,13 +183,25 @@ export function ThesisLive({
   const { stream, status: mediaStatus, error: mediaError, request, stop, setMicEnabled, setVideoEnabled } =
     useMediaStream()
 
-  const { state: qaState, speakingPhase, ask, listen, armListenMode, finalizeUserTurn, finish } =
-    useInterviewMachine({
-      stream,
-      micEnabled: micOn,
-      characterId: null,
-      voiceGender: committeeVoiceGender,
-    })
+  const {
+    state: qaState,
+    speakingPhase,
+    ask,
+    listen,
+    armListenMode,
+    finalizeUserTurn,
+    finish,
+    startUtteranceRecording,
+    stopSpeaking,
+  } = useInterviewMachine({
+    stream,
+    micEnabled: micOn,
+    characterId: null,
+    voiceGender: handoffVoiceGender,
+  })
+
+  qaStateRef.current = qaState
+  speakingPhaseRef.current = speakingPhase
 
   const presenting = sessionPhase === 'presentation' && presentationFlow === 'PRESENTING'
   const qaLive = sessionPhase === 'qa' && qaStarted && qaState !== 'REPORT'
@@ -291,108 +312,81 @@ export function ThesisLive({
     enabled: (presenting || qaLive) && faceAnalysisActive,
   })
 
-  useEffect(() => {
-    qaSecondsRef.current = qaSeconds
-  }, [qaSeconds])
-
-  useEffect(() => {
-    qaTimeUpPendingRef.current = qaTimeUpPending
-  }, [qaTimeUpPending])
-
-  useEffect(() => {
-    if (!qaStarted || sessionPhase !== 'qa') return
-    const id = window.setInterval(() => setQaSeconds((s) => s + 1), 1000)
-    return () => window.clearInterval(id)
-  }, [qaStarted, sessionPhase])
-
-  useEffect(() => {
-    if (!qaStarted || sessionPhase !== 'qa') return
-    if (qaSeconds < qaDurationSec) return
-    if (qaTimeUpPendingRef.current) return
-    setQaTimeUpPending(true)
-  }, [qaDurationSec, qaSeconds, qaStarted, sessionPhase])
-
   const processQaAnswer = useCallback(
-    async (rawText: string, fromTimer = false) => {
+    async (rawText: string) => {
+      if (processingQaRef.current || sessionClosingRef.current) return
       const text = rawText.trim()
       const sid = getStoredSessionId()
       if (!text) {
-        if (!fromTimer) {
-          setTurnError('No speech detected — try again.')
-          armListenMode()
-        }
+        setTurnError('No speech detected — try again.')
+        armListenMode()
         return
       }
       setTurnError(null)
+      processingQaRef.current = true
       setTranscribing(true)
       try {
-        const remaining = Math.max(0, qaDurationSec - qaSecondsRef.current)
-        const data = await postTurn(text, sid ?? undefined, {
-          qaTimeRemainingSec: fromTimer ? 0 : remaining,
-          qaExpired: fromTimer,
-        })
+        const data = await postTurn(text, sid ?? undefined)
+        setQaAnswersCompleted((n) => n + 1)
         setAiCaption(data.next_question.text)
         if (turnRequestsReportEnd(data)) {
           sessionClosingRef.current = true
           setSessionClosing(true)
           ask(data.next_question.text, {
             holdFloor: true,
+            voiceGender: randomCommitteeVoice(),
             onSpoken: () => navigateResultsWithSession(),
           })
           return
         }
         setCurrentQuestion(data.next_question.text)
-        ask(data.next_question.text)
+        ask(data.next_question.text, {
+          voiceGender: randomCommitteeVoice(),
+          onSpoken: () => listen(),
+        })
       } catch (err) {
         setTurnError(err instanceof Error ? err.message : 'Submit failed')
         armListenMode()
       } finally {
+        processingQaRef.current = false
         setTranscribing(false)
       }
     },
-    [armListenMode, ask, navigateResultsWithSession, qaDurationSec],
+    [armListenMode, ask, listen, navigateResultsWithSession],
   )
-
-  useEffect(() => {
-    if (!qaTimeUpPending || sessionClosingRef.current) return
-    if (qaState === 'LISTENING' && speakingPhase === 'idle') {
-      const text = browserSpeech.getTranscript().trim() || browserSpeech.getLiveCaption().trim()
-      browserSpeech.stop()
-      void processQaAnswer(text, true)
-      setQaTimeUpPending(false)
-    } else if (qaState === 'ASKING' && speakingPhase === 'idle') {
-      setQaTimeUpPending(false)
-      sessionClosingRef.current = true
-      setSessionClosing(true)
-      const line = currentQuestion || 'Thank you — that concludes our questions.'
-      ask(line, { holdFloor: true, onSpoken: () => navigateResultsWithSession() })
-    }
-  }, [
-    ask,
-    browserSpeech,
-    currentQuestion,
-    navigateResultsWithSession,
-    processQaAnswer,
-    qaState,
-    qaTimeUpPending,
-    speakingPhase,
-  ])
 
   useEffect(() => {
     if (sessionPhase !== 'qa' || !qaStarted || !currentQuestion || handoffPlayedRef.current) return
     if (qaState !== 'IDLE') return
+    if (sessionClosingRef.current) return
     handoffPlayedRef.current = true
-    const line = handoffLine
+    const playFirstQuestion = () => {
+      setAiCaption(currentQuestion)
+      ask(currentQuestion, {
+        voiceGender: randomCommitteeVoice(),
+        onSpoken: () => listen(),
+      })
+    }
+    const line = handoffLine?.trim()
     if (line) {
+      setAiCaption(line)
       ask(line, {
-        onSpoken: () => {
-          ask(currentQuestion, { onSpoken: () => listen() })
-        },
+        voiceGender: handoffVoiceGender,
+        onSpoken: playFirstQuestion,
       })
     } else {
-      ask(currentQuestion, { onSpoken: () => listen() })
+      playFirstQuestion()
     }
-  }, [ask, currentQuestion, handoffLine, listen, qaStarted, qaState, sessionPhase])
+  }, [
+    ask,
+    currentQuestion,
+    handoffLine,
+    handoffVoiceGender,
+    listen,
+    qaStarted,
+    qaState,
+    sessionPhase,
+  ])
 
   useEffect(() => {
     if (sessionPhase !== 'qa' || !qaLive) return
@@ -405,14 +399,57 @@ export function ThesisLive({
   }, [browserSpeech, qaLive, qaState, sessionPhase, speakingPhase])
 
   const submitQaAnswer = useCallback(async () => {
-    if (qaState !== 'LISTENING') return
+    if (processingQaRef.current || transcribing || sessionClosingRef.current) return
+    if (qaState !== 'LISTENING' || speakingPhase !== 'idle') return
     browserSpeech.stop()
     const text = browserSpeech.getTranscript().trim() || browserSpeech.getLiveCaption().trim()
     finalizeUserTurn()
     browserSpeech.reset()
     setUserCaption('')
-    await processQaAnswer(text, false)
-  }, [browserSpeech, finalizeUserTurn, processQaAnswer, qaState])
+    await processQaAnswer(text)
+  }, [browserSpeech, finalizeUserTurn, processQaAnswer, qaState, speakingPhase, transcribing])
+
+  submitQaAnswerRef.current = submitQaAnswer
+
+  const vadMode =
+    qaState === 'ASKING' && speakingPhase === 'audible' ? 'barge-in' : 'utterance'
+  const vadEnabled =
+    qaLive &&
+    micOn &&
+    !transcribing &&
+    !sessionClosing &&
+    ((qaState === 'LISTENING' && speakingPhase === 'idle') ||
+      (qaState === 'ASKING' && speakingPhase === 'audible'))
+
+  useVoiceActivity(
+    stream,
+    vadEnabled,
+    vadMode,
+    {
+      onSpeechStart: () => {
+        if (qaStateRef.current !== 'LISTENING') return
+        browserSpeech.reset()
+        setUserCaption('')
+        startUtteranceRecording()
+      },
+      onSpeechEnd: (hadMinSpeech) => {
+        if (qaStateRef.current !== 'LISTENING') return
+        if (!hadMinSpeech) {
+          armListenMode()
+          return
+        }
+        void submitQaAnswerRef.current()
+      },
+      onBargeIn: () => {
+        if (qaStateRef.current !== 'ASKING' || speakingPhaseRef.current !== 'audible') return
+        stopSpeaking()
+        browserSpeech.reset()
+        setUserCaption('')
+        armListenMode()
+      },
+    },
+    micOn,
+  )
 
   const handleStartPresentation = useCallback(() => {
     setBootError(null)
@@ -454,9 +491,12 @@ export function ThesisLive({
     sessionPhase === 'presentation' ? flowToTurnState(presentationFlow, qaState) : qaState
 
   const timerStarted = sessionPhase === 'presentation' ? presentationStarted : qaStarted
-  const timerSeconds = sessionPhase === 'presentation' ? presentationSeconds : qaSeconds
-  const timerDuration =
-    sessionPhase === 'presentation' ? presentationDurationSec : qaDurationSec
+  const timerSeconds = sessionPhase === 'presentation' ? presentationSeconds : qaAnswersCompleted
+  const timerDuration = sessionPhase === 'presentation' ? presentationDurationSec : 0
+  const qaQuestionLabel =
+    sessionPhase === 'qa' && qaStarted
+      ? `Question ${Math.min(qaAnswersCompleted + 1, qaQuestionCount)}/${qaQuestionCount}`
+      : null
 
   const controlsBusy =
     presentationFlow === 'PRESENTATION_SUBMIT' || transcribing || sessionClosing
@@ -469,7 +509,7 @@ export function ThesisLive({
         character={null}
         speakingSummary={null}
         sessionLive={sessionLive}
-        sessionClosing={sessionClosing || qaTimeUpPending || presentationFlow === 'PRESENTATION_SUBMIT'}
+        sessionClosing={sessionClosing || presentationFlow === 'PRESENTATION_SUBMIT'}
         started={timerStarted}
         seconds={timerSeconds}
         sessionDurationSec={timerDuration}
@@ -519,11 +559,7 @@ export function ThesisLive({
         generatingReport={generatingReport}
         speakingFlow={sessionPhase === 'presentation' ? speakingFlow : undefined}
         thesisSessionPhase={sessionPhase}
-        thesisQaTimerLabel={
-          sessionPhase === 'qa' && qaStarted
-            ? `Q&A ${Math.floor(qaRemaining / 60)}:${(qaRemaining % 60).toString().padStart(2, '0')}`
-            : null
-        }
+        thesisQaTimerLabel={qaQuestionLabel}
         teleprompterOverlay={
           sessionPhase === 'presentation' ? (
             <ThesisDefensePrompt filename={prep.defense_filename} preview={prep.defense_text_preview} />

@@ -420,7 +420,7 @@ export function pickTranscriptStrengths(
     signals.scenarioId === 'speaking' || options?.scenarioId === 'speaking'
       ? SPEAKING_STRENGTH_CATALOG
       : signals.scenarioId === 'thesis' || options?.scenarioId === 'thesis'
-        ? [...THESIS_STRENGTH_CATALOG, ...STRENGTH_CATALOG]
+        ? THESIS_STRENGTH_CATALOG
         : STRENGTH_CATALOG
   return pickFromCatalog(catalog, signals, cap)
 }
@@ -438,7 +438,7 @@ export function pickTranscriptImprovements(
     signals.scenarioId === 'speaking' || options?.scenarioId === 'speaking'
       ? SPEAKING_IMPROVEMENT_CATALOG
       : signals.scenarioId === 'thesis' || options?.scenarioId === 'thesis'
-        ? [...THESIS_IMPROVEMENT_CATALOG, ...IMPROVEMENT_CATALOG]
+        ? THESIS_IMPROVEMENT_CATALOG
         : IMPROVEMENT_CATALOG
   return pickFromCatalog(catalog, signals, cap)
 }

@@ -54,6 +54,7 @@ export type ThesisPrepareResponse = {
   thesis_pack: ThesisPackId
   presentation_duration_sec: number
   qa_duration_sec: number
+  qa_question_count: number
   character_id: string
   committee_voice_gender: CommitteeVoiceGender
   defense_document_id: string
@@ -76,6 +77,7 @@ export type SessionPersonaSettings = {
   thesis_pack?: ThesisPackId
   presentation_duration_sec?: number
   qa_duration_sec?: number
+  qa_question_count?: number
   defense_document_id?: string
   defense_filename?: string
   defense_text_preview?: string
@@ -183,6 +185,8 @@ export type ThesisReportDetail = {
   skipped_qa?: boolean
   committee_character_id?: string
   defense_coverage?: number
+  strengths?: string[] | null
+  improvements?: string[] | null
 }
 
 export type SessionReportPayload = {

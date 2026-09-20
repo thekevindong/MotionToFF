@@ -322,7 +322,7 @@ export function useInterviewMachine({
 
   const speak = useCallback(
 
-    (text: string, onDone?: () => void) => {
+    (text: string, onDone?: () => void, voiceGenderOverride?: CharacterGender | null) => {
 
       stopPlaybackOnly()
 
@@ -337,7 +337,7 @@ export function useInterviewMachine({
         return
       }
 
-      const gender = voiceGenderRef.current
+      const gender = voiceGenderOverride ?? voiceGenderRef.current
       const charId = characterIdRef.current
       const voiceId = gender
         ? elevenLabsVoiceIdForGender(gender)
@@ -441,7 +441,13 @@ export function useInterviewMachine({
 
     (
       question: string,
-      options?: { onSpoken?: () => void; /** Keep floor closed after TTS (session wrap-up). */ holdFloor?: boolean },
+      options?: {
+        onSpoken?: () => void
+        /** Keep floor closed after TTS (session wrap-up). */
+        holdFloor?: boolean
+        /** Per-line TTS voice (e.g. random committee member). */
+        voiceGender?: CharacterGender | null
+      },
     ) => {
 
       stopRecording()
@@ -454,7 +460,9 @@ export function useInterviewMachine({
 
       setSpeakingPhase('loading')
 
-      speak(question, () => {
+      speak(
+        question,
+        () => {
 
         if (!options?.holdFloor) {
           setState((s) => (s === 'ASKING' ? 'LISTENING' : s))
@@ -462,7 +470,9 @@ export function useInterviewMachine({
 
         options?.onSpoken?.()
 
-      })
+      },
+        options?.voiceGender,
+      )
 
     },
 

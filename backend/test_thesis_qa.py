@@ -29,7 +29,9 @@ def _defense_text() -> str:
 def test_thesis_pack_constants():
     assert ALLOWED_THESIS_PACKS == frozenset({"short", "long"})
     assert THESIS_PACKS["short"]["presentation_duration_sec"] == 30
+    assert THESIS_PACKS["short"]["qa_question_count"] == 3
     assert THESIS_PACKS["long"]["qa_duration_sec"] == 120
+    assert THESIS_PACKS["long"]["qa_question_count"] == 5
 
 
 def test_validate_thesis_documents_requires_single_txt():
@@ -116,6 +118,7 @@ def test_thesis_prepare_persists_pack_and_defense_meta():
     assert payload["thesis_pack"] == "short"
     assert payload["presentation_duration_sec"] == 30
     assert payload["qa_duration_sec"] == 60
+    assert payload["qa_question_count"] == 3
     assert payload["defense_filename"] == "defense.txt"
     assert payload["committee_voice_gender"] in ("female", "male")
     assert payload["character_id"] in COMMITTEE_CHARACTER_IDS

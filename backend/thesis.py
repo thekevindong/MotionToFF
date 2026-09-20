@@ -13,8 +13,8 @@ from interviewer import _create_interaction, _extract_interaction_text
 logger = logging.getLogger(__name__)
 
 THESIS_PACKS: dict[str, dict[str, int]] = {
-    "short": {"presentation_duration_sec": 30, "qa_duration_sec": 60},
-    "long": {"presentation_duration_sec": 60, "qa_duration_sec": 120},
+    "short": {"presentation_duration_sec": 30, "qa_duration_sec": 60, "qa_question_count": 3},
+    "long": {"presentation_duration_sec": 60, "qa_duration_sec": 120, "qa_question_count": 5},
 }
 ALLOWED_THESIS_PACKS = frozenset(THESIS_PACKS.keys())
 COMMITTEE_CHARACTER_IDS = ("recruiter", "manager", "hr")
@@ -279,6 +279,7 @@ def thesis_prepare(session_id: str, thesis_pack: str) -> dict[str, Any]:
     set_session_setting(session_id, "thesis_pack", pack)
     set_session_setting(session_id, "presentation_duration_sec", durations["presentation_duration_sec"])
     set_session_setting(session_id, "qa_duration_sec", durations["qa_duration_sec"])
+    set_session_setting(session_id, "qa_question_count", durations["qa_question_count"])
     set_session_setting(session_id, "defense_document_id", doc_meta["document_id"])
     set_session_setting(session_id, "defense_filename", doc_meta["filename"])
     set_session_setting(session_id, "defense_text_preview", preview)
@@ -288,6 +289,7 @@ def thesis_prepare(session_id: str, thesis_pack: str) -> dict[str, Any]:
         "thesis_pack": pack,
         "presentation_duration_sec": durations["presentation_duration_sec"],
         "qa_duration_sec": durations["qa_duration_sec"],
+        "qa_question_count": durations["qa_question_count"],
         "character_id": character_id,
         "committee_voice_gender": voice_gender,
         "defense_document_id": doc_meta["document_id"],
@@ -482,10 +484,37 @@ Return ONLY valid JSON (no markdown) with this shape:
   } or null when skipped_qa is true,
   "overall": 0.0-1.0,
   "defense_coverage": 0.0-1.0,
-  "evidence": ["short strings"],
-  "red_flags": ["snake_case tokens"]
+  "strengths": ["short positive observations"] or null,
+  "improvements": ["short constructive critiques"] or null,
+  "red_flags": ["snake_case tokens"] or null
 }
+Rules:
+- strengths: only genuine positives grounded in the transcripts; use null or [] when nothing clearly deserves praise.
+- improvements: only actionable gaps or risks; use null or [] when nothing specific to call out.
+- Never place criticisms, caveats, or negative observations in strengths.
+- Never place praise in improvements.
 Anchor presentation and Q&A scores in the uploaded defense text and transcripts only."""
+
+
+def qa_question_limit(settings: dict[str, Any]) -> int:
+    raw = settings.get("qa_question_count")
+    if isinstance(raw, (int, float)) and int(raw) > 0:
+        return int(raw)
+    pack = str(settings.get("thesis_pack") or "short").strip()
+    return int(THESIS_PACKS.get(pack, THESIS_PACKS["short"])["qa_question_count"])
+
+
+def thesis_qa_quota_reached(records: list[dict[str, Any]], settings: dict[str, Any]) -> bool:
+    """True when the candidate has already answered the configured number of committee questions."""
+    limit = qa_question_limit(settings)
+    qa_answers = max(0, len(records) - 1)
+    return qa_answers >= limit
+
+
+def thesis_qa_closing_after_this_answer(records: list[dict[str, Any]], settings: dict[str, Any]) -> bool:
+    limit = qa_question_limit(settings)
+    qa_answers_before = max(0, len(records) - 1)
+    return qa_answers_before + 1 >= limit
 
 
 def defense_coverage_heuristic(transcript: str, defense_text: str) -> float:
@@ -603,34 +632,39 @@ def presage_thesis_judge(
     else:
         overall = pres_overall
 
-    evidence: list[str] = []
+    strengths: list[str] = []
     if coverage >= 0.5:
-        evidence.append("Presentation touched key terms and claims from your defense file.")
+        strengths.append("Presentation touched key terms and claims from your defense file.")
     if comp >= 0.68:
-        evidence.append("You stayed composed on camera during the presentation.")
+        strengths.append("You stayed composed on camera during the presentation.")
     if qa_block and qa_block["specificity"] >= 0.6:
-        evidence.append("Q&A answers referenced specifics from your uploaded text.")
-    if not evidence:
-        evidence.append("Session completed — scores derived from defense text overlap and delivery signals.")
+        strengths.append("Q&A answers referenced specifics from your uploaded text.")
 
+    improvements: list[str] = []
     red_flags: list[str] = []
     if not trimmed:
         red_flags.append("empty_presentation")
+        improvements.append("No presentation transcript was captured — speak through your defense summary with the mic on.")
     if coverage < 0.3 and trimmed:
         red_flags.append("low_defense_coverage")
+        improvements.append("Anchor your talk to more specific claims and terms from your uploaded defense file.")
     if target > 0 and not presentation_finished_in_time:
         red_flags.append("missed_time_budget")
+        improvements.append("Practice finishing inside the presentation countdown or close cleanly before time runs out.")
     if comp < 0.42:
         red_flags.append("low_composure_delivery")
+        improvements.append("Pause at section transitions to reset composure on camera.")
     if not skipped_qa and not qa_turns:
         red_flags.append("no_qa_turns")
+        improvements.append("Complete at least one committee Q&A round for defense-under-pressure practice.")
 
     return {
         "presentation": presentation,
         "qa": qa_block,
         "overall": overall,
         "defense_coverage": coverage,
-        "evidence": evidence[:5],
+        "strengths": strengths[:5] or None,
+        "improvements": improvements[:5] or None,
         "red_flags": red_flags,
         "skipped_qa": skipped_qa,
         "committee_character_id": committee_character_id,
@@ -713,6 +747,20 @@ def _thesis_report_from_raw(
         nums = [_clamp01(v) for v in vals if isinstance(v, (int, float))]
         overall = sum(nums) / len(nums) if nums else 0.5
 
+    def _str_list(key: str, legacy_key: str | None = None) -> list[str]:
+        val = raw.get(key)
+        if val is None and legacy_key:
+            val = raw.get(legacy_key)
+        if val is None:
+            return []
+        if not isinstance(val, list):
+            return []
+        return [str(x).strip() for x in val if str(x).strip()]
+
+    strengths = _str_list("strengths", "evidence")
+    improvements = _str_list("improvements")
+    red_flags = _str_list("red_flags")
+
     flat: dict[str, Any] = {
         "structure": _clamp01(presentation.get("structure", overall)),
         "specificity": _clamp01(
@@ -721,8 +769,8 @@ def _thesis_report_from_raw(
         "confidence": _clamp01(presentation.get("confidence", overall)),
         "presence": _clamp01(presentation.get("presence", overall)),
         "overall": overall,
-        "evidence": raw.get("evidence") if isinstance(raw.get("evidence"), list) else [],
-        "red_flags": raw.get("red_flags") if isinstance(raw.get("red_flags"), list) else [],
+        "evidence": strengths,
+        "red_flags": red_flags,
         "message_fit": _clamp01(raw.get("defense_coverage", presentation.get("structure", 0.5))),
         "teleprompter_coverage": _clamp01(raw.get("defense_coverage", 0.5)),
     }
@@ -733,6 +781,8 @@ def _thesis_report_from_raw(
         "skipped_qa": bool(raw.get("skipped_qa")),
         "committee_character_id": str(raw.get("committee_character_id") or ""),
         "defense_coverage": _clamp01(raw.get("defense_coverage", flat["teleprompter_coverage"])),
+        "strengths": strengths or None,
+        "improvements": improvements or None,
     }
     return {
         "rubric": rubric,

@@ -231,6 +231,9 @@ export default function Results({ navigate }: { navigate: Navigate }) {
               <div className="report-card report-card--good">
                 <h3 className="report-h3">What worked</h3>
                 <ul className="report-list">
+                  {strengths.length === 0 && isThesis && (
+                    <li className="report-list-empty">No specific strengths called out for this run.</li>
+                  )}
                   {strengths.map((s) => (
                     <li key={s}>
                       <span className="report-ic report-ic--good" aria-hidden="true">
@@ -253,6 +256,9 @@ export default function Results({ navigate }: { navigate: Navigate }) {
               <div className="report-card report-card--work">
                 <h3 className="report-h3">Work on this</h3>
                 <ul className="report-list">
+                  {improvements.length === 0 && isThesis && (
+                    <li className="report-list-empty">No specific improvements called out for this run.</li>
+                  )}
                   {improvements.map((s) => (
                     <li key={s}>
                       <span className="report-ic report-ic--work" aria-hidden="true">

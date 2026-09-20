@@ -266,7 +266,7 @@ export function StudioPrep({
           </button>
           <h1 className="prep-panel-title">Choose your defense duration</h1>
           <p className="prep-panel-sub">
-            Short or long pack — presentation time and committee Q&A are fixed for each.
+            Short or long pack — timed presentation plus a fixed number of committee questions.
           </p>
           <div className="prep-duration-block prep-duration-block--center">
             <div className="duration-grid" role="listbox" aria-label="Thesis duration pack">
