@@ -38,10 +38,14 @@ export function StageCaptionStack({
     captionPriority === 'user' && userCaptionsEnabled && userLineTrimmed.length > 0
 
   useEffect(() => {
-    if (!userCaptionsEnabled || captionPriority === 'ai') {
+    if (!userCaptionsEnabled) {
       setUserCaptionLive(false)
       setDisplayUser('')
       setUserPhase('in')
+      return
+    }
+    if (captionPriority === 'ai') {
+      setUserCaptionLive(false)
       if (captionPriority === 'ai') setAiPhase('in')
     }
   }, [userCaptionsEnabled, captionPriority])

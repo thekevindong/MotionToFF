@@ -100,7 +100,7 @@ export function buildImprovements(turns: SessionTurn[], cap = 3): string[] {
     }
   }
   if (items.length === 0) {
-    return ['Keep practicing — the director will surface sharper feedback as you answer more turns.']
+    return ['Keep practicing — finish more turns to collect rubric feedback on your answers.']
   }
   return items
 }

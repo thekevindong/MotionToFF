@@ -47,15 +47,19 @@ SETTINGS_OPENING_QUESTION_KEY = "cached_opening_question"
 
 History = list[dict[str, Any]]
 
-SYSTEM_INSTRUCTION = """You are Maya Chen, a professional interviewer in a live practice mock interview.
+CONCISE_SPOKEN_RULES = """This is spoken aloud via TTS — every extra word costs time. Be terse and conversational.
+Hard limits:
+- First turn only: ask ONE opening question in at most 18 words. No greeting monologue.
+- Later turns: at most TWO short sentences and 28 words total — (1) a ≤8-word reaction that shows you listened, then (2) ONE question in ≤20 words.
+Skip filler ("Thanks for sharing", "That's a great point"). No bullet points, labels, or coaching."""
 
-Each turn (except the very first), respond in a natural spoken style:
-1. Start with a brief, warm acknowledgment of what the candidate just said — one short sentence that shows you listened (no scoring, no coaching, no long feedback).
-2. Then ask exactly ONE new interview question (one or two sentences).
+SYSTEM_INSTRUCTION = f"""You are Maya Chen, a professional interviewer in a live practice mock interview.
 
-On the first turn only (candidate just joined), skip the acknowledgment and ask a strong opening question.
+You own pacing and tone: push back when answers are vague, soften if they are stressed — always in character, never a coach or rubric judge.
 
-Never repeat a question already asked. Keep the whole turn concise (about 2–4 sentences). No bullet points or section labels."""
+{CONCISE_SPOKEN_RULES}
+
+Never repeat a question already asked."""
 
 CONTEXT_MAX_CHARS = 8000
 
@@ -66,10 +70,10 @@ SALARY_FIRST_TURN_INPUT = (
     "The candidate has joined the salary negotiation. Open with your first compensation-focused question."
 )
 FOLLOWUP_SUFFIX = (
-    "\n\nRespond with a brief acknowledgment of their answer, then your next interview question."
+    "\n\nReply in ≤28 words: tiny acknowledgment + one new interview question."
 )
 SALARY_FOLLOWUP_SUFFIX = (
-    "\n\nRespond with a brief acknowledgment of their answer, then your next salary negotiation question."
+    "\n\nReply in ≤28 words: tiny acknowledgment + one salary negotiation question."
 )
 
 
@@ -144,12 +148,11 @@ def _persona_instruction(session_id: str | None) -> str:
     if isinstance(character_id, str) and character_id in CHARACTER_PERSONAS:
         base = CHARACTER_PERSONAS[character_id]
         base = (
-            f"{base}\n\nEach turn (except the very first), respond in a natural spoken style:\n"
-            "1. Start with a brief, warm acknowledgment of what the candidate just said — one short sentence.\n"
-            "2. Then ask exactly ONE new question (one or two sentences).\n\n"
-            "On the first turn only, skip the acknowledgment and ask a strong opening question.\n"
-            "Never repeat a question already asked. Keep the whole turn concise (about 2–4 sentences). "
-            "No bullet points or section labels."
+            f"{base}\n\nYou control the live session: adjust tone (warm, firm, skeptical, impatient) based on "
+            "their answers — push back when they are vague, ease off if they are clearly stressed, and stay "
+            "fully in character. Never mention rubrics, scores, or AI.\n\n"
+            f"{CONCISE_SPOKEN_RULES}\n\n"
+            "Never repeat a question already asked."
         )
     else:
         base = SYSTEM_INSTRUCTION
@@ -196,6 +199,20 @@ def _history_as_recovery_input(history: History) -> str:
         "Interviewer: (briefly acknowledge their last answer, then ask the next interview question)"
     )
     return "\n".join(lines)
+
+
+def _trim_spoken_line(text: str, max_words: int = 32) -> str:
+    """Safety net so TTS stays short even if the model runs long."""
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return cleaned
+    words = cleaned.split()
+    if len(words) <= max_words:
+        return cleaned
+    trimmed = " ".join(words[:max_words]).rstrip(".,;:")
+    if trimmed and trimmed[-1] not in ".!?":
+        trimmed += "."
+    return trimmed
 
 
 def _latest_candidate_answer(history: History) -> str:
@@ -277,7 +294,7 @@ def _gemini_next_turn(
     body: dict[str, Any] = {
         "model": model,
         "generation_config": {
-            "max_output_tokens": 1024,
+            "max_output_tokens": 256,
             "thinking_level": "minimal",
         },
     }
@@ -301,7 +318,7 @@ def _gemini_next_turn(
     if isinstance(interaction_id, str):
         _persist_interaction_id(session_id, interaction_id)
 
-    question = _extract_interaction_text(payload)
+    question = _trim_spoken_line(_extract_interaction_text(payload))
     return {"role": "interviewer", "text": question}
 
 
@@ -382,7 +399,7 @@ def _gemini_interjection(
         },
     }
     payload = _create_interaction(body, api_key)
-    return _extract_interaction_text(payload)
+    return _trim_spoken_line(_extract_interaction_text(payload), max_words=35)
 
 
 MOCK_SESSION_CLOSINGS = [
@@ -437,7 +454,7 @@ def _gemini_session_closing(
         },
     }
     payload = _create_interaction(body, api_key)
-    return _extract_interaction_text(payload)
+    return _trim_spoken_line(_extract_interaction_text(payload), max_words=45)
 
 
 def _history_from_session(session_id: str | None) -> History:

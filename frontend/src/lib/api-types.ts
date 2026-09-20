@@ -44,6 +44,14 @@ export type SessionPersonaSettings = {
   session_duration_sec?: number
 }
 
+export type SessionReportPayload = {
+  rubric?: RubricScores
+  per_turn?: Array<{ turn: number } & RubricScores>
+  mock?: boolean
+  source?: 'nemotron' | 'mock' | 'mock_fallback' | string
+  fallback?: boolean
+}
+
 export type SessionResponse = {
   session_id?: string
   job_title?: string | null
@@ -51,6 +59,7 @@ export type SessionResponse = {
   current_question: InterviewerLine
   turns: SessionTurn[]
   documents?: SessionDocument[]
+  session_report?: SessionReportPayload
 }
 
 export type CreateSessionResponse = {

@@ -23,7 +23,13 @@ function fmtDuration(sec: number) {
 type LoadState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; turns: SessionTurn[]; jobTitle: string | null }
+  | {
+      status: 'ready'
+      turns: SessionTurn[]
+      jobTitle: string | null
+      reportFallback: boolean
+      reportSource: string | null
+    }
 
 export default function Results({ navigate }: { navigate: Navigate }) {
   const summary = getSession()
@@ -44,10 +50,13 @@ export default function Results({ navigate }: { navigate: Navigate }) {
     load
       .then((data) => {
         if (!cancelled) {
+          const report = data.session_report
           setState({
             status: 'ready',
             turns: data.turns ?? [],
             jobTitle: data.job_title ?? null,
+            reportFallback: Boolean(report?.fallback),
+            reportSource: report?.source ?? null,
           })
         }
       })
@@ -86,10 +95,26 @@ export default function Results({ navigate }: { navigate: Navigate }) {
       </header>
 
       <main className="report-main">
-        {state.status === 'loading' && <p className="report-status">Loading session…</p>}
+        {state.status === 'loading' && (
+          <div className="report-generating" role="status" aria-live="polite">
+            <span className="report-spinner" aria-hidden="true" />
+            <div>
+              <p className="report-generating-title">Generating your report</p>
+              <p className="report-generating-sub">
+                Nemotron is scoring your transcript when configured — otherwise using baseline charts.
+              </p>
+            </div>
+          </div>
+        )}
         {state.status === 'error' && (
           <p className="report-status report-status--error" role="alert">
             Could not load report: {state.message}
+          </p>
+        )}
+
+        {state.status === 'ready' && state.reportFallback && (
+          <p className="report-status report-status--warn" role="status">
+            Nemotron could not finish scoring — showing baseline charts from your session data.
           </p>
         )}
 

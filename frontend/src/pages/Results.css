@@ -383,10 +383,55 @@
   background: var(--paper);
 }
 
+.report-generating {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 0 0 24px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--sand-line-strong);
+  background: var(--paper);
+}
+.report-generating-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.report-generating-sub {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.report-spinner {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+  border: 2px solid var(--sand-line-strong);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: report-spin 0.75s linear infinite;
+}
+@keyframes report-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .report-status {
   margin: 0 0 20px;
   font-size: 0.95rem;
   color: var(--muted);
+}
+.report-status--warn {
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(160, 120, 40, 0.35);
+  background: rgba(160, 120, 40, 0.08);
+  color: #6b4f12;
 }
 .report-status--error {
   padding: 12px 16px;

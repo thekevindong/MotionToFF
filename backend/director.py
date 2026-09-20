@@ -56,18 +56,37 @@ def parse_director_action(text: str) -> str:
     return DEFAULT_ACTION
 
 
-def _mock_decide(composure: float, history: History) -> DirectorDecision:
+def _local_decide(composure: float, history: History) -> DirectorDecision:
+    """Fast pacing signal for sprite UX — no LLM on the /turn hot path."""
+    if composure < 0.32:
+        action = "ease_off"
+        rationale = "Candidate composure is low — ease pacing."
+    elif composure < 0.48:
+        action = "follow_up"
+        rationale = "Steady composure — standard follow-up."
+    elif composure > 0.78:
+        action = "press_harder"
+        rationale = "Strong composure — press with a harder angle."
+    elif composure > 0.62:
+        action = "curveball"
+        rationale = "Comfortable candidate — vary the angle."
+    else:
+        action = DEFAULT_ACTION
+        rationale = "Neutral pacing — continue with a standard follow-up."
+
     return {
-        "action": DEFAULT_ACTION,
-        "rationale": (
-            "Mock director: neutral pacing — continue with a standard follow-up."
-        ),
+        "action": action,
+        "rationale": rationale,
         "input_snapshot": {
             "composure": composure,
             "turn_count": len(history),
         },
         "mock": True,
     }
+
+
+def _mock_decide(composure: float, history: History) -> DirectorDecision:
+    return _local_decide(composure, history)
 
 
 def _history_summary(history: History, max_turns: int = 6) -> str:
@@ -112,12 +131,17 @@ def _nemotron_decide(composure: float, history: History) -> DirectorDecision:
 
 
 def decide(composure: float, history: History) -> DirectorDecision:
-    """Choose the next session move. Uses Nemotron when NEMOTRON_API_KEY is set."""
+    """Sprite / UX pacing hint only. Live interview tone is owned by Gemini."""
+    return _local_decide(composure, history)
+
+
+def decide_with_nemotron(composure: float, history: History) -> DirectorDecision:
+    """Optional Nemotron director (debug / future) — not used on /turn."""
     if not nemotron_configured():
-        return _mock_decide(composure, history)
+        return _local_decide(composure, history)
 
     try:
         return _nemotron_decide(composure, history)
-    except Exception as exc:  # noqa: BLE001 — keep /turn green
-        logger.warning("Nemotron director failed, using default action: %s", exc)
-        return _mock_decide(composure, history)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Nemotron director failed, using local action: %s", exc)
+        return _local_decide(composure, history)

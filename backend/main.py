@@ -462,18 +462,16 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
 
 
     composure_task = asyncio.create_task(asyncio.to_thread(sample_composure, answer))
+    next_question_task = asyncio.create_task(
+        asyncio.to_thread(next_turn, turn_history, session_id)
+    )
 
     composure_value = await composure_task
+    next_question = await next_question_task
 
-    decision = await asyncio.to_thread(decide, composure_value, turn_history)
-
+    decision = decide(composure_value, turn_history)
     composure = composure_value
-
     scores = pending_turn_scores(composure_value)
-
-
-
-    next_question = await asyncio.to_thread(next_turn, turn_history, session_id)
 
 
 

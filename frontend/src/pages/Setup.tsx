@@ -25,6 +25,7 @@ import {
   getHealth,
   getSession,
   getVoiceStatus,
+  getSessionReport,
   postSessionClose,
   postTurn,
   uploadDocument,
@@ -69,8 +70,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const sessionTimeUpHandledRef = useRef(false)
   const sessionClosingRef = useRef(false)
   const [sessionClosing, setSessionClosing] = useState(false)
+  const [generatingReport, setGeneratingReport] = useState(false)
+  const [sessionTimeUpPending, setSessionTimeUpPending] = useState(false)
+  const sessionTimeUpPendingRef = useRef(false)
   const secondsRef = useRef(0)
   const endSessionRef = useRef<() => void>(() => {})
+  const playTimedSessionCloseRef = useRef<() => Promise<void>>(async () => {})
   const [statsOpen, setStatsOpen] = useState(true)
   const [micOn, setMicOn] = useState(true)
   const [videoOn, setVideoOn] = useState(true)
@@ -94,6 +99,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const selfVideoRef = useRef<HTMLVideoElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const [userCaption, setUserCaption] = useState('')
+  const [lingeringUserCaption, setLingeringUserCaption] = useState('')
   const [interjectionCaption, setInterjectionCaption] = useState<string | null>(null)
   const [lastInterjectionTrigger, setLastInterjectionTrigger] = useState<InterjectTrigger | null>(null)
   const [devForceStress, setDevForceStress] = useState(() => interjectDevMode())
@@ -178,6 +184,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         }
         setTurnCount((n) => n + 1)
         setLastDirector({ action: data.decision.action, overall: data.scores.overall })
+        setLingeringUserCaption('')
+        if (sessionTimeUpPendingRef.current) {
+          void playTimedSessionCloseRef.current()
+          return
+        }
         setCurrentQuestion(data.next_question.text)
         askRef.current(data.next_question.text)
       } catch (err) {
@@ -194,7 +205,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const manualSubmitRef = useRef(false)
   const stateRef = useRef<TurnState>('IDLE')
   const speakingPhaseRef = useRef<'idle' | 'loading' | 'audible'>('idle')
-  const browserSpeechApiRef = useRef({
+  const browserSpeechApiRef = useRef<{
+    getTranscript: () => string
+    reset: () => void
+    stop: () => void
+  }>({
     getTranscript: () => '',
     reset: () => {},
     stop: () => {},
@@ -272,6 +287,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         setTranscribing(false)
       }
       browserSpeechApiRef.current.stop()
+      const linger =
+        browserSpeechApiRef.current.getTranscript().trim() || text.trim()
+      if (linger) setLingeringUserCaption(linger)
       browserSpeechApiRef.current.reset()
       setUserCaption('')
       await processTurnAnswerRef.current(text, manualSubmitRef.current, sttFailed)
@@ -333,12 +351,18 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     reset: browserSpeech.reset,
     stop: browserSpeech.stop,
   }
-  const showUserCaptions = userOwnsFloor
+  const userCaptionLingerActive =
+    Boolean(lingeringUserCaption.trim()) && (state === 'THINKING' || transcribing)
+  const showUserCaptions = userOwnsFloor || userCaptionLingerActive
   const coachOverlayPlaying =
     Boolean(interjectionCaption) && state === 'LISTENING' && speakingPhase !== 'idle'
   /** Barge-in / answer turn: user over AI. Main question + coach overlay: AI over user. */
   const captionPriority: 'user' | 'ai' =
-    userOwnsFloor && !coachOverlayPlaying ? 'user' : 'ai'
+    (userOwnsFloor && !coachOverlayPlaying) ||
+    (userCaptionLingerActive && !coachOverlayPlaying)
+      ? 'user'
+      : 'ai'
+  const stageUserCaption = userOwnsFloor ? userCaption : lingeringUserCaption
 
   const commitUserTurn = useCallback(
     async (manual: boolean) => {
@@ -349,6 +373,8 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       if (!isCloudSttActiveNow()) {
         browserSpeech.stop()
         const text = browserSpeech.getTranscript()
+        const live = browserSpeech.getLiveCaption().trim() || text.trim()
+        if (live) setLingeringUserCaption(live)
         browserSpeech.reset()
         setUserCaption('')
         await processTurnAnswerRef.current(text, manual)
@@ -378,6 +404,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       if (stateRef.current !== 'LISTENING') return
       browserSpeech.reset()
       setUserCaption('')
+      setLingeringUserCaption('')
       startUtteranceRecording()
     },
     onSpeechEnd: (hadMinSpeech) => {
@@ -435,20 +462,17 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   )
 
   useEffect(() => {
-    if (!showUserCaptions) {
-      setUserCaption('')
+    if (!userOwnsFloor) {
+      if (!userCaptionLingerActive) setUserCaption('')
       return
     }
     const id = window.setInterval(() => {
-      setUserCaption(browserSpeech.getLiveCaption())
+      const live = browserSpeech.getLiveCaption()
+      setUserCaption(live)
+      if (live.trim()) setLingeringUserCaption(live)
     }, 200)
     return () => window.clearInterval(id)
-  }, [showUserCaptions, browserSpeech])
-
-  useEffect(() => {
-    if (userOwnsFloor) return
-    setUserCaption('')
-  }, [userOwnsFloor])
+  }, [userOwnsFloor, userCaptionLingerActive, browserSpeech])
 
   useEffect(() => {
     transcribingRef.current = transcribing
@@ -486,6 +510,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   useEffect(() => {
     secondsRef.current = seconds
   }, [seconds])
+
+  useEffect(() => {
+    sessionTimeUpPendingRef.current = sessionTimeUpPending
+  }, [sessionTimeUpPending])
 
   useEffect(() => {
     setMicEnabled(micOn)
@@ -543,6 +571,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setDevForceStress(interjectDevMode())
     sessionClosingRef.current = false
     setSessionClosing(false)
+    setSessionTimeUpPending(false)
+    sessionTimeUpHandledRef.current = false
+    setLingeringUserCaption('')
+    setGeneratingReport(false)
     clearPrepComplete()
     setStudioPhase('prep')
   }, [browserSpeech, finish, reset, stop])
@@ -627,13 +659,22 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     void commitUserTurn(true)
   }
 
-  const endSession = useCallback(() => {
+  const endSession = useCallback(async () => {
+    setGeneratingReport(true)
     finish()
     stop()
     browserSpeech.stop()
+    const sessionId = getStoredSessionId()
+    if (sessionId) {
+      try {
+        await getSessionReport(sessionId)
+      } catch {
+        /* Results page will retry */
+      }
+    }
     if (mode && character) {
       setSession({
-        sessionId: getStoredSessionId() ?? undefined,
+        sessionId: sessionId ?? undefined,
         mode: mode.title,
         opponent: character.name,
         opponentRole: character.role,
@@ -651,9 +692,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     if (sessionClosingRef.current) return
     sessionClosingRef.current = true
     sessionTimeUpHandledRef.current = true
+    setSessionTimeUpPending(false)
     setSessionClosing(true)
     setTurnError(null)
-    stopSpeaking()
     browserSpeech.stop()
 
     const fallback =
@@ -682,15 +723,23 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     } else {
       ask(line, { onSpoken: afterSpoken })
     }
-  }, [ask, browserSpeech, sessionDurationSec, speakInterjection, stopSpeaking])
+  }, [ask, browserSpeech, sessionDurationSec, speakInterjection])
+
+  playTimedSessionCloseRef.current = playTimedSessionClose
 
   useEffect(() => {
     if (!started || sessionDurationSec <= 0) return
     if (seconds < sessionDurationSec) return
+    if (sessionTimeUpHandledRef.current || sessionTimeUpPending) return
+    setSessionTimeUpPending(true)
+  }, [seconds, sessionDurationSec, started, sessionTimeUpPending])
+
+  useEffect(() => {
+    if (!sessionTimeUpPending || sessionClosingRef.current) return
     if (state === 'THINKING' || transcribing) return
-    if (sessionTimeUpHandledRef.current) return
+    if (state === 'ASKING' && speakingPhase !== 'idle') return
     void playTimedSessionClose()
-  }, [seconds, sessionDurationSec, started, state, transcribing, playTimedSessionClose])
+  }, [sessionTimeUpPending, state, speakingPhase, transcribing, playTimedSessionClose])
 
   const leaveStudio = () => {
     if (sessionLive) {
@@ -794,7 +843,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         mode={mode}
         character={character}
         sessionLive={sessionLive}
-        sessionClosing={sessionClosing}
+        sessionClosing={sessionClosing || sessionTimeUpPending}
         started={started}
         seconds={seconds}
         sessionDurationSec={sessionDurationSec}
@@ -806,7 +855,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         opponentImg={opponentImg}
         aiCaptionLine={aiCaptionLine}
         aiCaptionInterjection={aiCaptionInterjection}
-        userCaption={showUserCaptions ? userCaption : ''}
+        userCaption={showUserCaptions ? stageUserCaption : ''}
         userCaptionsEnabled={showUserCaptions}
         captionPriority={captionPriority}
         displayError={displayError}
@@ -822,8 +871,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         controlsBusy={controlsBusy}
         onSubmitAnswer={submitAnswer}
         onAnswerNow={() => listen()}
-        onEndSession={endSession}
+        onEndSession={() => void endSession()}
         transcribing={transcribing}
+        generatingReport={generatingReport}
       />
     </div>
   )

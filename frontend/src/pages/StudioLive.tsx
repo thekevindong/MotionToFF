@@ -244,6 +244,7 @@ export type StudioLiveProps = {
   character: Character
   sessionLive: boolean
   sessionClosing?: boolean
+  generatingReport?: boolean
   started: boolean
   seconds: number
   sessionDurationSec: number
@@ -281,6 +282,7 @@ export function StudioLive({
   character,
   sessionLive,
   sessionClosing = false,
+  generatingReport = false,
   started,
   seconds,
   sessionDurationSec,
@@ -478,6 +480,17 @@ export function StudioLive({
           </button>
         </div>
       </footer>
+      {generatingReport && (
+        <div className="studio-report-overlay" role="status" aria-live="polite">
+          <div className="studio-report-overlay-card">
+            <span className="report-spinner" aria-hidden="true" />
+            <p className="studio-report-overlay-title">Generating report</p>
+            <p className="studio-report-overlay-sub">
+              Scoring your session — this may take a moment when Nemotron is enabled.
+            </p>
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -136,7 +136,9 @@ def score(answer: str) -> RubricScores:
         return _mock_score(answer)
 
 
-def _mock_session_report(turns: list[dict[str, Any]]) -> dict[str, Any]:
+def _mock_session_report(
+    turns: list[dict[str, Any]], *, fallback: bool = False
+) -> dict[str, Any]:
     per_turn: list[dict[str, Any]] = []
     for row in turns:
         rubric = _mock_score(str(row.get("answer", "")))
@@ -152,7 +154,8 @@ def _mock_session_report(turns: list[dict[str, Any]]) -> dict[str, Any]:
         },
         mock=True,
     )
-    return {"rubric": agg, "per_turn": per_turn, "mock": True}
+    source = "mock_fallback" if fallback else "mock"
+    return {"rubric": agg, "per_turn": per_turn, "mock": True, "source": source, "fallback": fallback}
 
 
 def _session_transcript_block(turns: list[dict[str, Any]], job_title: str | None) -> str:
@@ -212,7 +215,13 @@ def _nemotron_session_report(turns: list[dict[str, Any]], job_title: str | None)
             per_turn.append({"turn": turn_idx, **rubric})
 
     rubric = _normalize_rubric(raw, mock=False)
-    return {"rubric": rubric, "per_turn": per_turn, "mock": False}
+    return {
+        "rubric": rubric,
+        "per_turn": per_turn,
+        "mock": False,
+        "source": "nemotron",
+        "fallback": False,
+    }
 
 
 def score_session(session_id: str) -> dict[str, Any]:
@@ -221,19 +230,25 @@ def score_session(session_id: str) -> dict[str, Any]:
 
     turns = get_turns(session_id)
     if not turns:
-        return {"rubric": _normalize_rubric({}, mock=True), "per_turn": [], "mock": True}
+        return {
+            "rubric": _normalize_rubric({}, mock=True),
+            "per_turn": [],
+            "mock": True,
+            "source": "mock",
+            "fallback": False,
+        }
 
     row = get_session_row(session_id)
     job_title = (row.get("job_title") or "").strip() if row else None
 
     if not nemotron_configured():
-        return _mock_session_report(turns)
+        return _mock_session_report(turns, fallback=False)
 
     try:
         return _nemotron_session_report(turns, job_title or None)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Nemotron session judge failed, using mock: %s", exc)
-        return _mock_session_report(turns)
+        return _mock_session_report(turns, fallback=True)
 
 
 def apply_session_report_to_turns(

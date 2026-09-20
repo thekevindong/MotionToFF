@@ -94,7 +94,7 @@ export async function getSession(sessionId?: string): Promise<SessionResponse> {
   return res.json()
 }
 
-/** Loads session + end-of-session Nemotron rubric (merged into turn scores). */
+/** Loads session + end-of-session rubric (Nemotron when keyed, mock otherwise). */
 export async function getSessionReport(sessionId: string): Promise<SessionResponse> {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/report`)
   if (!res.ok) {
