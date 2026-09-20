@@ -44,6 +44,7 @@ function CameraTile({
   onToggleVideo,
   videoRef,
   stageRef,
+  variant = 'floating',
 }: {
   stream: MediaStream | null
   mediaStatus: string
@@ -51,7 +52,9 @@ function CameraTile({
   onToggleVideo: () => void
   videoRef: RefObject<HTMLVideoElement | null>
   stageRef: RefObject<HTMLDivElement | null>
+  variant?: 'floating' | 'docked'
 }) {
+  const docked = variant === 'docked'
   const tileRef = useRef<HTMLDivElement>(null)
   const drag = useRef({ active: false, offX: 0, offY: 0 })
   const resize = useRef({ active: false, startX: 0, startW: 0 })
@@ -73,7 +76,7 @@ function CameraTile({
   )
 
   useLayoutEffect(() => {
-    if (pos !== null) return
+    if (docked || pos !== null) return
     const stage = stageRef.current
     const el = tileRef.current
     if (!stage || !el) return
@@ -91,7 +94,7 @@ function CameraTile({
     }
     const w = el.offsetWidth || width
     setPos(clamp(stage.clientWidth - w - 16, 16))
-  }, [pos, clamp, width, stageRef])
+  }, [docked, pos, clamp, width, stageRef])
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -100,6 +103,7 @@ function CameraTile({
   }, [stream, videoRef])
 
   const onGripDown = (e: React.PointerEvent) => {
+    if (docked) return
     const el = tileRef.current
     const stage = stageRef.current
     if (!el || !stage) return
@@ -159,20 +163,26 @@ function CameraTile({
   return (
     <div
       ref={tileRef}
-      className={`camtile ${dragging ? 'is-dragging' : ''}`}
-      style={{
-        width,
-        ...(pos
-          ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' }
-          : { right: 16, top: 16, left: 'auto', bottom: 'auto' }),
-      }}
+      className={`camtile ${docked ? 'camtile--docked' : ''} ${dragging ? 'is-dragging' : ''}`}
+      style={
+        docked
+          ? undefined
+          : {
+              width,
+              ...(pos
+                ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' }
+                : { right: 16, top: 16, left: 'auto', bottom: 'auto' }),
+            }
+      }
     >
       <div className="camtile-grip" onPointerDown={onGripDown} role="presentation">
-        <span className="camtile-grip-dots" aria-hidden="true">
-          <i /> <i /> <i /> <i /> <i /> <i />
-        </span>
+        {!docked && (
+          <span className="camtile-grip-dots" aria-hidden="true">
+            <i /> <i /> <i /> <i /> <i /> <i />
+          </span>
+        )}
         <span className="camtile-name">You</span>
-        <span className="camtile-drag-hint">drag</span>
+        {!docked && <span className="camtile-drag-hint">drag</span>}
       </div>
       <div className="camtile-screen">
         <video ref={videoRef} className={`camtile-video ${camOn ? 'is-on' : ''}`} autoPlay muted playsInline />
@@ -193,11 +203,13 @@ function CameraTile({
         >
           {camOn ? 'Turn off' : 'Turn on'}
         </button>
-        <span className="camtile-resize" onPointerDown={onResizeDown} role="presentation" aria-label="Resize camera">
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M14 6v8H6M14 14 6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" fill="none" />
-          </svg>
-        </span>
+        {!docked && (
+          <span className="camtile-resize" onPointerDown={onResizeDown} role="presentation" aria-label="Resize camera">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M14 6v8H6M14 14 6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+            </svg>
+          </span>
+        )}
       </div>
     </div>
   )
@@ -387,7 +399,20 @@ export function StudioLive({
             draggable={false}
           />
           <div className="stage-bg-scrim" aria-hidden="true" />
-          {isSpeaking && teleprompterOverlay}
+          {isSpeaking && teleprompterOverlay && (
+            <div className="speaking-stage-rail">
+              {teleprompterOverlay}
+              <CameraTile
+                variant="docked"
+                stream={stream}
+                mediaStatus={mediaStatus}
+                videoEnabled={videoOn}
+                onToggleVideo={onToggleVideo}
+                videoRef={videoRef}
+                stageRef={stageRef}
+              />
+            </div>
+          )}
           <img className="stage-watermark" src="/brand/speakup-icon-white.png" alt="" aria-hidden="true" />
 
           {!statsOpen && (
@@ -437,14 +462,16 @@ export function StudioLive({
             </p>
           )}
 
-          <CameraTile
-            stream={stream}
-            mediaStatus={mediaStatus}
-            videoEnabled={videoOn}
-            onToggleVideo={onToggleVideo}
-            videoRef={videoRef}
-            stageRef={stageRef}
-          />
+          {!isSpeaking && (
+            <CameraTile
+              stream={stream}
+              mediaStatus={mediaStatus}
+              videoEnabled={videoOn}
+              onToggleVideo={onToggleVideo}
+              videoRef={videoRef}
+              stageRef={stageRef}
+            />
+          )}
         </div>
       </div>
 

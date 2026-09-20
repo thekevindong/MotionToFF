@@ -10,6 +10,7 @@ import {
   SESSION_DURATION_OPTIONS,
   formatSessionDuration,
 } from '../config/session-duration'
+import { CUSTOM_SPEECH_ID } from '../config/custom-speech'
 import { getSpeeches } from '../lib/api'
 import type { SpeechCatalogItem } from '../lib/api-types'
 
@@ -45,6 +46,8 @@ export function StudioPrep({
   onModeChange,
   onCharChange,
   onSpeechSelect,
+  onCustomSpeech,
+  customSpeechExcerpt,
   onSpeakingDurationChange,
   contextJobTitle,
   onContextJobTitleChange,
@@ -65,6 +68,8 @@ export function StudioPrep({
   onModeChange: (mode: Mode) => void
   onCharChange: (character: Character) => void
   onSpeechSelect: (speech: SpeechCatalogItem) => void
+  onCustomSpeech: (payload: { excerpt: string; title: string; speaker: string }) => void
+  customSpeechExcerpt: string
   onSpeakingDurationChange: (id: SpeakingDurationId) => void
   contextJobTitle: string
   onContextJobTitleChange: (value: string) => void
@@ -87,6 +92,11 @@ export function StudioPrep({
   const isSpeaking = mode?.id === 'speaking'
   const character = SALARY_CHARACTERS.find((c) => c.id === charId) ?? null
   const selectedSpeech = speeches.find((s) => s.id === speechId) ?? null
+  const isCustomSpeech = speechId === CUSTOM_SPEECH_ID
+  const customReady = isCustomSpeech && customSpeechExcerpt.trim().split(/\s+/).filter(Boolean).length >= 8
+  const speechLabel = isCustomSpeech ? 'Your speech' : (selectedSpeech?.title ?? 'Speech')
+  const speechSpeaker = isCustomSpeech ? 'You' : (selectedSpeech?.speaker ?? 'Speaker')
+  const speechChosen = Boolean(selectedSpeech || customReady)
   const activeIdx = stepIndex(step)
 
   useEffect(() => {
@@ -111,7 +121,7 @@ export function StudioPrep({
     }
   }, [isSpeaking])
 
-  const opponentReady = isSpeaking ? Boolean(speechId) : Boolean(character)
+  const opponentReady = isSpeaking ? Boolean(speechId && (isCustomSpeech ? customReady : true)) : Boolean(character)
 
   const goNext = () => {
     if (step === 'scenario' && mode) setStep('opponent')
@@ -131,7 +141,9 @@ export function StudioPrep({
     setStep('opponent')
   }
 
-  const readyToEnter = isSpeaking ? Boolean(mode && selectedSpeech) : Boolean(mode && character)
+  const readyToEnter = isSpeaking
+    ? Boolean(mode && (isCustomSpeech ? customReady : selectedSpeech))
+    : Boolean(mode && character)
 
   return (
     <main className="prep-main">
@@ -268,6 +280,41 @@ export function StudioPrep({
             </p>
           )}
           {speechesLoading && <p className="prep-panel-sub">Loading speeches…</p>}
+          <div
+            className={`mode-card mode-card--custom ${isCustomSpeech ? 'is-selected' : ''}`}
+            style={{ marginBottom: 16 }}
+          >
+            <span className="mode-name">Your own speech</span>
+            <span className="mode-desc">Upload a .txt file or paste the text you want on the teleprompter.</span>
+            <label className="context-upload-btn" style={{ marginTop: 10, display: 'inline-block' }}>
+              <input
+                type="file"
+                accept=".txt,text/plain"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  e.target.value = ''
+                  if (!file) return
+                  void file.text().then((text) => {
+                    const title = file.name.replace(/\.txt$/i, '').trim() || 'Your speech'
+                    onCustomSpeech({ excerpt: text, title, speaker: 'You' })
+                  })
+                }}
+              />
+              Upload .txt
+            </label>
+            <textarea
+              className="prep-custom-speech"
+              placeholder="Or paste your speech here (at least 8 words)…"
+              rows={5}
+              value={isCustomSpeech ? customSpeechExcerpt : ''}
+              onChange={(e) => {
+                const excerpt = e.target.value
+                onCustomSpeech({ excerpt, title: 'Your speech', speaker: 'You' })
+              }}
+              aria-label="Custom speech text"
+            />
+          </div>
           <div className="mode-grid">
             {speeches.map((s, i) => (
               <button
@@ -292,7 +339,7 @@ export function StudioPrep({
               type="button"
               className="prep-btn prep-btn--primary"
               onClick={goNext}
-              disabled={!speechId || speechesLoading}
+              disabled={!opponentReady || speechesLoading}
             >
               Continue
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -380,7 +427,7 @@ export function StudioPrep({
         </section>
       )}
 
-      {step === 'context' && mode && isSpeaking && selectedSpeech && (
+      {step === 'context' && mode && isSpeaking && speechChosen && (
         <section className="prep-panel prep-panel--wide" key="speaking-duration">
           <button type="button" className="prep-panel-back" onClick={goBack}>
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -393,7 +440,7 @@ export function StudioPrep({
                 fill="none"
               />
             </svg>
-            {selectedSpeech.title}
+            {speechLabel}
           </button>
           <h1 className="prep-panel-title">How long do you want to speak?</h1>
           <p className="prep-panel-sub">
@@ -450,15 +497,15 @@ export function StudioPrep({
               <span className="prep-summary-label">Scenario</span>
               <span className="prep-summary-value">{mode.title}</span>
             </div>
-            {isSpeaking && selectedSpeech ? (
+            {isSpeaking && speechChosen ? (
               <>
                 <div className="prep-summary-row">
                   <span className="prep-summary-label">Speech</span>
-                  <span className="prep-summary-value">{selectedSpeech.title}</span>
+                  <span className="prep-summary-value">{speechLabel}</span>
                 </div>
                 <div className="prep-summary-row">
                   <span className="prep-summary-label">Speaker</span>
-                  <span className="prep-summary-value">{selectedSpeech.speaker}</span>
+                  <span className="prep-summary-value">{speechSpeaker}</span>
                 </div>
                 <div className="prep-summary-row">
                   <span className="prep-summary-label">Duration</span>

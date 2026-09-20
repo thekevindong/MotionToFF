@@ -85,7 +85,7 @@ from repository import (
 
 )
 
-from speaking import build_teleprompter
+from speaking import build_teleprompter, speech_from_custom_excerpt
 
 
 
@@ -345,9 +345,15 @@ class SessionCloseResponse(BaseModel):
 
 class SpeakingPrepareRequest(BaseModel):
 
-    speech_id: str = Field(..., min_length=1)
+    speech_id: str | None = Field(default=None, min_length=1)
 
     duration_mode: str = Field(..., min_length=1)
+
+    custom_title: str | None = Field(default=None, max_length=200)
+
+    custom_speaker: str | None = Field(default=None, max_length=120)
+
+    custom_excerpt: str | None = Field(default=None, max_length=50000)
 
 
 class SpeakingPrepareResponse(BaseModel):
@@ -465,9 +471,23 @@ def post_speaking_prepare(session_id: str, body: SpeakingPrepareRequest):
     if duration_mode not in ALLOWED_SPEAKING_DURATION_MODES:
         raise HTTPException(status_code=400, detail="invalid_duration_mode")
 
-    speech = get_speech(body.speech_id.strip())
-    if not speech:
-        raise HTTPException(status_code=404, detail="speech_not_found")
+    custom_excerpt = (body.custom_excerpt or "").strip()
+    if custom_excerpt:
+        try:
+            speech = speech_from_custom_excerpt(
+                custom_excerpt,
+                title=body.custom_title,
+                speaker=body.custom_speaker,
+            )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="custom_excerpt_too_short") from None
+    else:
+        speech_id = (body.speech_id or "").strip()
+        if not speech_id:
+            raise HTTPException(status_code=400, detail="speech_id_required")
+        speech = get_speech(speech_id)
+        if not speech:
+            raise HTTPException(status_code=404, detail="speech_not_found")
 
     teleprompter = build_teleprompter(speech, duration_mode)
     prepared_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()

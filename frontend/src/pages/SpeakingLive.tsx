@@ -180,11 +180,10 @@ export function SpeakingLive({
     presage_degraded: presageDegradedRef.current,
   }
 
-  const audienceBase = flow === 'READY' ? 'empty' : 'house'
   const { backdrop: stageBackgroundSrc } = useAudienceReaction({
     sample: composureSample,
-    basePhase: audienceBase,
-    enabled: delivering,
+    basePhase: 'house',
+    enabled: delivering && faceAnalysisActive,
   })
 
   const state = flowToTurnState(flow)

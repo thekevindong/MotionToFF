@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 import './SpeakingTeleprompter.css'
 
@@ -26,6 +26,15 @@ function activeLineIndex(lines: string[], elapsedSec: number): number {
 
 export function SpeakingTeleprompter({ lines, title, speaker, elapsedSec, active }: Props) {
   const current = useMemo(() => activeLineIndex(lines, elapsedSec), [lines, elapsedSec])
+  const linesRef = useRef<HTMLOListElement>(null)
+
+  useEffect(() => {
+    if (!active) return
+    const list = linesRef.current
+    if (!list) return
+    const item = list.children[current] as HTMLElement | undefined
+    item?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [active, current])
 
   if (!lines.length) return null
 
@@ -35,7 +44,7 @@ export function SpeakingTeleprompter({ lines, title, speaker, elapsedSec, active
         <p className="speaking-teleprompter-title">{title}</p>
         <p className="speaking-teleprompter-speaker">{speaker}</p>
       </header>
-      <ol className="speaking-teleprompter-lines">
+      <ol className="speaking-teleprompter-lines" ref={linesRef}>
         {lines.map((line, i) => (
           <li
             key={`${i}-${line.slice(0, 24)}`}

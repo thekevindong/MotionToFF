@@ -14,7 +14,7 @@ from interviewer import _create_interaction, _extract_interaction_text
 logger = logging.getLogger(__name__)
 
 DurationMode = Literal["30", "45", "full"]
-WORDS_PER_SEC = 2.5
+WORDS_PER_SEC = 2.2
 
 TELEPROMPTER_SYSTEM = """You are a speech coach preparing a teleprompter for a public speaking practice app.
 
@@ -23,7 +23,7 @@ Given a historical speech excerpt, a duration mode, and a target speaking time, 
 
 Rules:
 - Preserve the speaker's voice and wording from the excerpt; do not invent new content.
-- For short timed modes (30s or 45s), pick the most iconic, rhythmic lines that fit the word budget.
+- For short timed modes (30s or 45s), pick only the most iconic lines that fit the word budget — never exceed it.
 - For "full" mode, include the entire excerpt split into scroll-friendly chunks (~1–2 sentences per line).
 - No commentary addressed to the user; lines are only what the speaker would read aloud.
 - estimated_sec should reflect a natural pace near 2.5 words per second."""
@@ -77,10 +77,49 @@ def target_for_mode(duration_mode: DurationMode, est_full_duration_sec: int) -> 
 
 def word_budget_for_mode(duration_mode: DurationMode, est_full_duration_sec: int) -> int | None:
     if duration_mode == "30":
-        return 75
+        return 58
     if duration_mode == "45":
-        return 110
+        return 88
     return None
+
+
+def enforce_word_budget(lines: list[str], budget: int) -> list[str]:
+    if budget <= 0 or not lines:
+        return lines
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        words = _excerpt_words(line)
+        if not words:
+            continue
+        if used >= budget:
+            break
+        remaining = budget - used
+        if len(words) <= remaining:
+            out.append(line)
+            used += len(words)
+        else:
+            out.append(_join_words(words, remaining))
+            used = budget
+            break
+    return out if out else [_join_words(_excerpt_words(lines[0]), min(budget, len(_excerpt_words(lines[0]))))]
+
+
+def _cap_timed_teleprompter(result: dict[str, Any], duration_mode: DurationMode, est_full: int) -> dict[str, Any]:
+    if duration_mode == "full":
+        return result
+    budget = word_budget_for_mode(duration_mode, est_full)
+    if not budget:
+        return result
+    lines = result.get("lines")
+    if not isinstance(lines, list):
+        return result
+    trimmed = enforce_word_budget([str(ln) for ln in lines], budget)
+    word_count = sum(len(_excerpt_words(ln)) for ln in trimmed)
+    target_sec = int(result.get("target_sec") or target_for_mode(duration_mode, est_full))
+    estimated = max(1, min(target_sec, int(word_count / WORDS_PER_SEC)))
+    result = {**result, "lines": trimmed, "estimated_sec": estimated}
+    return result
 
 
 def mock_teleprompter(speech: dict[str, Any], duration_mode: DurationMode) -> dict[str, Any]:
@@ -190,15 +229,40 @@ def gemini_teleprompter(
     }
 
 
+def speech_from_custom_excerpt(
+    excerpt: str,
+    *,
+    title: str | None = None,
+    speaker: str | None = None,
+) -> dict[str, Any]:
+    text = (excerpt or "").strip()
+    words = _excerpt_words(text)
+    if len(words) < 8:
+        raise ValueError("custom_excerpt_too_short")
+    est_full = max(1, int(len(words) / WORDS_PER_SEC))
+    return {
+        "id": "custom",
+        "speaker": (speaker or "").strip() or "You",
+        "title": (title or "").strip() or "Your speech",
+        "excerpt_text": text,
+        "est_full_duration_sec": est_full,
+    }
+
+
 def build_teleprompter(speech: dict[str, Any], duration_mode: DurationMode) -> dict[str, Any]:
+    est_full = int(speech.get("est_full_duration_sec") or 0)
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return mock_teleprompter(speech, duration_mode)
+        return _cap_timed_teleprompter(mock_teleprompter(speech, duration_mode), duration_mode, est_full)
     try:
-        return gemini_teleprompter(speech, duration_mode, api_key=api_key)
+        return _cap_timed_teleprompter(
+            gemini_teleprompter(speech, duration_mode, api_key=api_key),
+            duration_mode,
+            est_full,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Gemini teleprompter failed, using mock: %s", exc)
-        return mock_teleprompter(speech, duration_mode)
+        return _cap_timed_teleprompter(mock_teleprompter(speech, duration_mode), duration_mode, est_full)
 
 
 SPEAKING_JUDGE_SYSTEM = """You are a public speaking coach scoring a completed practice delivery.

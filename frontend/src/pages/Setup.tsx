@@ -17,6 +17,7 @@ import {
 import { useBrowserSpeechCapture } from '../hooks/use-browser-speech-capture'
 import { useComposureReactions, useInterjectDevShortcut } from '../hooks/use-composure-reactions'
 import { useComposureSampler } from '../hooks/use-composure-sampler'
+import { CUSTOM_SPEECH_ID } from '../config/custom-speech'
 import { stageBackgroundUrl } from '../config/stage-backgrounds'
 import { stageOpponentSrc, useCharacterExpression } from '../hooks/use-character-expression'
 import { useFaceComposure } from '../hooks/use-face-composure'
@@ -72,6 +73,12 @@ function browserCaptionAnswer(api: Pick<BrowserSpeechApi, 'getTranscript' | 'get
 
 const CONTEXT_FILE_EXT = new Set(['.pdf', '.docx', '.txt'])
 
+function speakingSpeechReady(speechId: string | null, customExcerpt: string): boolean {
+  if (!speechId) return false
+  if (speechId === CUSTOM_SPEECH_ID) return customExcerpt.trim().split(/\s+/).filter(Boolean).length >= 8
+  return true
+}
+
 function turnRequestsReportEnd(data: TurnResponse): boolean {
   return Boolean(data.end_session || data.next_question.end_session)
 }
@@ -98,6 +105,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     defaults.speakingDurationId ?? '30',
   )
   const [speechMeta, setSpeechMeta] = useState<{ title: string; speaker: string } | null>(null)
+  const [customSpeechExcerpt, setCustomSpeechExcerpt] = useState('')
   const [speakingPrep, setSpeakingPrep] = useState<SpeakingPrepareResponse | null>(null)
   const [speakingRestore, setSpeakingRestore] = useState<'idle' | 'loading' | 'done'>('idle')
   const [speakingRestartNote, setSpeakingRestartNote] = useState<string | null>(null)
@@ -806,7 +814,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
 
   const startSession = async () => {
     if (!mode || !mode.ready || starting) return false
-    if (mode.id === 'speaking' && !speechId) return false
+    if (mode.id === 'speaking' && !speakingSpeechReady(speechId, customSpeechExcerpt)) return false
     if (mode.id !== 'speaking' && !character) return false
     setStartError(null)
     setTurnError(null)
@@ -856,9 +864,16 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
           scenarioId: 'speaking',
           sessionDurationSec: durationSec,
         })
+        const isCustomSpeech = speechId === CUSTOM_SPEECH_ID
         const prep = await postSpeakingPrepare(session_id, {
-          speechId: speechId!,
           durationMode: speakingDurationId,
+          ...(isCustomSpeech
+            ? {
+                customExcerpt: customSpeechExcerpt,
+                customTitle: speechMeta?.title,
+                customSpeaker: speechMeta?.speaker,
+              }
+            : { speechId: speechId! }),
         })
         setSpeakingPrep(prep)
         setStoredSessionId(session_id)
@@ -896,7 +911,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
 
   const enterStudio = async () => {
     if (!mode) return
-    if (mode.id === 'speaking' && !speechId) return
+    if (mode.id === 'speaking' && !speakingSpeechReady(speechId, customSpeechExcerpt)) return
     if (mode.id !== 'speaking' && !character) return
     writePrepDefaults({
       modeId: mode.id,
@@ -1040,6 +1055,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setCharId(null)
     setSpeechId(null)
     setSpeechMeta(null)
+    setCustomSpeechExcerpt('')
     if (m.id === 'speaking') {
       setSessionDurationSec(speakingDurationSeconds(speakingDurationId))
     }
@@ -1049,7 +1065,15 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const onSpeechSelect = (speech: SpeechCatalogItem) => {
     setSpeechId(speech.id)
     setSpeechMeta({ title: speech.title, speaker: speech.speaker })
+    setCustomSpeechExcerpt('')
     writePrepDefaults({ speechId: speech.id })
+  }
+
+  const onCustomSpeech = (payload: { excerpt: string; title: string; speaker: string }) => {
+    setSpeechId(CUSTOM_SPEECH_ID)
+    setSpeechMeta({ title: payload.title, speaker: payload.speaker })
+    setCustomSpeechExcerpt(payload.excerpt)
+    writePrepDefaults({ speechId: CUSTOM_SPEECH_ID })
   }
 
   const onSpeakingDurationChange = (id: SpeakingDurationId) => {
@@ -1100,6 +1124,8 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
           onModeChange={onModeChange}
           onCharChange={onCharChange}
           onSpeechSelect={onSpeechSelect}
+          onCustomSpeech={onCustomSpeech}
+          customSpeechExcerpt={customSpeechExcerpt}
           onSpeakingDurationChange={onSpeakingDurationChange}
           contextJobTitle={contextJobTitle}
           onContextJobTitleChange={setContextJobTitle}

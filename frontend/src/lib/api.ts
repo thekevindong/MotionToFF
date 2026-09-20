@@ -125,15 +125,27 @@ export async function postSpeakingComplete(
 
 export async function postSpeakingPrepare(
   sessionId: string,
-  body: { speechId: string; durationMode: SpeakingDurationId },
+  body: {
+    speechId?: string
+    durationMode: SpeakingDurationId
+    customExcerpt?: string
+    customTitle?: string
+    customSpeaker?: string
+  },
 ): Promise<SpeakingPrepareResponse> {
+  const payload: Record<string, string> = { duration_mode: body.durationMode }
+  const excerpt = body.customExcerpt?.trim()
+  if (excerpt) {
+    payload.custom_excerpt = excerpt
+    if (body.customTitle?.trim()) payload.custom_title = body.customTitle.trim()
+    if (body.customSpeaker?.trim()) payload.custom_speaker = body.customSpeaker.trim()
+  } else if (body.speechId) {
+    payload.speech_id = body.speechId
+  }
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/speaking/prepare`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      speech_id: body.speechId,
-      duration_mode: body.durationMode,
-    }),
+    body: JSON.stringify(payload),
   })
   if (!res.ok) {
     throw new Error(await parseError(res))
