@@ -1,4 +1,9 @@
 import type { RubricScores, SessionTurn } from './api-types'
+import {
+  pickTranscriptImprovements,
+  pickTranscriptStrengths,
+  useTranscriptFeedbackCatalog,
+} from './transcript-feedback'
 
 export type ReportMetric = {
   label: string
@@ -167,6 +172,28 @@ export function buildStrengths(turns: SessionTurn[], cap = 3): string[] {
     return ['Complete a full answer loop in the studio to collect rubric evidence.']
   }
   return items
+}
+
+export function buildReportStrengths(
+  turns: SessionTurn[],
+  reportSource: string | null,
+  cap = 3,
+): string[] {
+  if (useTranscriptFeedbackCatalog(reportSource)) {
+    return pickTranscriptStrengths(turns, cap)
+  }
+  return buildStrengths(turns, cap)
+}
+
+export function buildReportImprovements(
+  turns: SessionTurn[],
+  reportSource: string | null,
+  cap = 3,
+): string[] {
+  if (useTranscriptFeedbackCatalog(reportSource)) {
+    return pickTranscriptImprovements(turns, cap)
+  }
+  return buildImprovements(turns, cap)
 }
 
 export function buildImprovements(turns: SessionTurn[], cap = 3): string[] {

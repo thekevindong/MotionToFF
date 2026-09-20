@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 from typing import Any
 
-from nemotron_client import chat_json_object, nemotron_configured
+from nemotron_client import chat_json_object, nemotron_configured, parse_json_object
 
 logger = logging.getLogger(__name__)
+
+GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+GEMINI_INTERACTIONS_API_REVISION = "2026-05-20"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_GEMINI_SESSION_TIMEOUT = 15.0
 
 RubricScores = dict[str, Any]
 
@@ -277,6 +285,134 @@ def _transcript_clip(text: str, *, field: str) -> str:
     return trimmed[: limit - 3].rstrip() + "..."
 
 
+def _session_report_from_judge_raw(
+    raw: dict[str, Any],
+    turns: list[dict[str, Any]],
+    *,
+    source: str,
+    mock: bool,
+    fallback: bool,
+) -> dict[str, Any]:
+    per_turn_raw = raw.get("per_turn")
+    per_turn: list[dict[str, Any]] = []
+    if isinstance(per_turn_raw, list):
+        for item in per_turn_raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                turn_idx = int(item.get("turn", 0))
+            except (TypeError, ValueError):
+                continue
+            if turn_idx < 1:
+                continue
+            rubric = _normalize_rubric(item, mock=mock)
+            per_turn.append({"turn": turn_idx, **rubric})
+
+    rubric = _normalize_rubric(raw, mock=mock)
+    if len(turns) > 0 and len(per_turn) < len(turns):
+        have = {int(p["turn"]) for p in per_turn if "turn" in p}
+        logger.warning(
+            "%s session judge returned %s/%s per_turn rows; filling gaps with Presage heuristics",
+            source,
+            len(per_turn),
+            len(turns),
+        )
+        for row in turns:
+            idx = int(row.get("turn", 0))
+            if idx < 1 or idx in have:
+                continue
+            comp = row.get("composure")
+            comp_f = float(comp) if isinstance(comp, (int, float)) else 0.5
+            gap = _score_turn_presage(str(row.get("answer", "")), comp_f)
+            per_turn.append({"turn": idx, **gap})
+        per_turn.sort(key=lambda item: int(item.get("turn", 0)))
+    return {
+        "rubric": rubric,
+        "per_turn": per_turn,
+        "mock": mock,
+        "source": source,
+        "fallback": fallback,
+    }
+
+
+def gemini_configured() -> bool:
+    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+
+
+def _gemini_session_timeout() -> float:
+    raw = os.getenv("GEMINI_SESSION_TIMEOUT", str(DEFAULT_GEMINI_SESSION_TIMEOUT)).strip()
+    try:
+        return max(5.0, float(raw))
+    except ValueError:
+        return DEFAULT_GEMINI_SESSION_TIMEOUT
+
+
+def _gemini_extract_interaction_text(payload: dict[str, Any]) -> str:
+    direct = payload.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    steps = payload.get("steps") or []
+    for step in reversed(steps):
+        if not isinstance(step, dict):
+            continue
+        content = step.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            if parts:
+                return "\n".join(parts).strip()
+    raise ValueError("Gemini interaction returned no text")
+
+
+def _gemini_chat_json_object(
+    system: str,
+    user: str,
+    *,
+    timeout: float,
+    max_tokens: int = 1536,
+) -> dict[str, Any]:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+    model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    body: dict[str, Any] = {
+        "model": model,
+        "system_instruction": system,
+        "input": user,
+        "generation_config": {
+            "max_output_tokens": max_tokens,
+            "thinking_level": "minimal",
+        },
+    }
+    request = urllib.request.Request(
+        GEMINI_INTERACTIONS_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+            "Api-Revision": GEMINI_INTERACTIONS_API_REVISION,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini session judge HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Gemini session judge request failed: {exc.reason}") from exc
+    text = _gemini_extract_interaction_text(payload)
+    return parse_json_object(text)
+
+
 def _session_transcript_block(turns: list[dict[str, Any]], job_title: str | None) -> str:
     lines: list[str] = []
     if job_title:
@@ -331,45 +467,49 @@ def _nemotron_session_report(turns: list[dict[str, Any]], job_title: str | None)
         time.perf_counter() - started,
         len(turns),
     )
-    per_turn_raw = raw.get("per_turn")
-    per_turn: list[dict[str, Any]] = []
-    if isinstance(per_turn_raw, list):
-        for item in per_turn_raw:
-            if not isinstance(item, dict):
-                continue
-            try:
-                turn_idx = int(item.get("turn", 0))
-            except (TypeError, ValueError):
-                continue
-            if turn_idx < 1:
-                continue
-            rubric = _normalize_rubric(item, mock=False)
-            per_turn.append({"turn": turn_idx, **rubric})
+    return _session_report_from_judge_raw(
+        raw, turns, source="nemotron", mock=False, fallback=False
+    )
 
-    rubric = _normalize_rubric(raw, mock=False)
-    if len(turns) > 0 and len(per_turn) < len(turns):
-        have = {int(p["turn"]) for p in per_turn if "turn" in p}
-        logger.warning(
-            "Nemotron session judge returned %s/%s per_turn rows; filling gaps with Presage heuristics",
-            len(per_turn),
-            len(turns),
-        )
-        for row in turns:
-            idx = int(row.get("turn", 0))
-            if idx < 1 or idx in have:
-                continue
-            comp = row.get("composure")
-            comp_f = float(comp) if isinstance(comp, (int, float)) else 0.5
-            gap = _score_turn_presage(str(row.get("answer", "")), comp_f)
-            per_turn.append({"turn": idx, **gap})
-        per_turn.sort(key=lambda item: int(item.get("turn", 0)))
-    return {
-        "rubric": rubric,
-        "per_turn": per_turn,
-        "mock": False,
-        "source": "nemotron",
-        "fallback": False,
+
+def _gemini_session_report(turns: list[dict[str, Any]], job_title: str | None) -> dict[str, Any]:
+    transcript = _session_transcript_block(turns, job_title)
+    composure_vals = [
+        float(t["composure"])
+        for t in turns
+        if isinstance(t.get("composure"), (int, float))
+    ]
+    composure_summary = {
+        "samples": composure_vals,
+        "avg": sum(composure_vals) / len(composure_vals) if composure_vals else None,
+        "min": min(composure_vals) if composure_vals else None,
     }
+    user_content = (
+        "Score this completed interview session.\n\n"
+        f"Composure summary: {composure_summary}\n\n"
+        f"Transcript:\n{transcript}"
+    )
+    session_timeout = _gemini_session_timeout()
+    started = time.perf_counter()
+    raw = _gemini_chat_json_object(
+        SESSION_JUDGE_SYSTEM,
+        user_content,
+        timeout=session_timeout,
+    )
+    logger.info(
+        "Gemini session judge completed in %.1fs (%s turns, timeout=%ss)",
+        time.perf_counter() - started,
+        len(turns),
+        session_timeout,
+    )
+    return _session_report_from_judge_raw(
+        raw, turns, source="gemini", mock=False, fallback=False
+    )
+
+
+def _presage_fallback_report(turns: list[dict[str, Any]]) -> dict[str, Any]:
+    """Charts from heuristics; UI uses transcript rule catalog for strengths/improvements."""
+    return _presage_session_report(turns, fallback=True)
 
 
 def score_session(session_id: str) -> dict[str, Any]:
@@ -389,14 +529,26 @@ def score_session(session_id: str) -> dict[str, Any]:
     row = get_session_row(session_id)
     job_title = (row.get("job_title") or "").strip() if row else None
 
-    if not nemotron_configured():
-        return _presage_session_report(turns, fallback=False)
+    if nemotron_configured():
+        try:
+            return _nemotron_session_report(turns, job_title or None)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Nemotron session judge failed: %s", exc)
+            if gemini_configured():
+                try:
+                    return _gemini_session_report(turns, job_title or None)
+                except Exception as gem_exc:  # noqa: BLE001
+                    logger.warning("Gemini session judge failed after Nemotron: %s", gem_exc)
+            return _presage_fallback_report(turns)
 
-    try:
-        return _nemotron_session_report(turns, job_title or None)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Nemotron session judge failed, using Presage baseline: %s", exc)
-        return _presage_session_report(turns, fallback=True)
+    if gemini_configured():
+        try:
+            return _gemini_session_report(turns, job_title or None)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini session judge failed: %s", exc)
+            return _presage_fallback_report(turns)
+
+    return _presage_session_report(turns, fallback=False)
 
 
 def apply_session_report_to_turns(

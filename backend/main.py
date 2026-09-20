@@ -10,7 +10,11 @@ from typing import Any
 
 
 
+from pathlib import Path
+
 from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
@@ -73,10 +77,6 @@ from repository import (
     set_session_setting,
 
 )
-
-
-
-load_dotenv()
 
 
 

@@ -48,7 +48,7 @@ export type SessionReportPayload = {
   rubric?: RubricScores
   per_turn?: Array<{ turn: number } & RubricScores>
   mock?: boolean
-  source?: 'nemotron' | 'mock' | 'mock_fallback' | string
+  source?: 'nemotron' | 'gemini' | 'presage' | 'presage_fallback' | 'mock' | string
   fallback?: boolean
 }
 

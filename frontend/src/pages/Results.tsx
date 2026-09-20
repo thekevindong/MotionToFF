@@ -4,9 +4,9 @@ import { getSession as fetchSessionApi, getSessionReport } from '../lib/api'
 import type { SessionTurn } from '../lib/api-types'
 import {
   applyPresageScoresToTurns,
-  buildImprovements,
+  buildReportImprovements,
+  buildReportStrengths,
   buildMetrics,
-  buildStrengths,
   buildTranscript,
   computeOverallScore,
 } from '../lib/report-data'
@@ -80,8 +80,14 @@ export default function Results({ navigate }: { navigate: Navigate }) {
         finishReady(baseline, { reportFallback: true, nemotronScoring: true })
       }
 
+      const reportWaitMs = 17_000
       try {
-        const data = await getSessionReport(sessionId)
+        const data = await Promise.race([
+          getSessionReport(sessionId),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => reject(new Error('report_timeout')), reportWaitMs)
+          }),
+        ])
         if (!cancelled) {
           finishReady(data, {
             reportFallback: Boolean(data.session_report?.fallback),
@@ -109,8 +115,9 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   const turns = state.status === 'ready' ? state.turns : []
   const overall = computeOverallScore(turns)
   const metrics = buildMetrics(turns)
-  const strengths = buildStrengths(turns)
-  const improvements = buildImprovements(turns)
+  const reportSource = state.status === 'ready' ? state.reportSource : null
+  const strengths = buildReportStrengths(turns, reportSource)
+  const improvements = buildReportImprovements(turns, reportSource)
   const transcript = buildTranscript(turns)
   const ringScore = overall ?? 0
 
@@ -136,7 +143,7 @@ export default function Results({ navigate }: { navigate: Navigate }) {
             <div>
               <p className="report-generating-title">Generating your report</p>
               <p className="report-generating-sub">
-                Nemotron is scoring your transcript when configured — otherwise using baseline charts.
+                Loading your session — AI scoring when configured, otherwise instant rule-based feedback.
               </p>
             </div>
           </div>
@@ -149,13 +156,7 @@ export default function Results({ navigate }: { navigate: Navigate }) {
 
         {state.status === 'ready' && state.nemotronScoring && (
           <p className="report-status" role="status">
-            Showing baseline scores now — Nemotron is still scoring your transcript (often 10–30s).
-          </p>
-        )}
-
-        {state.status === 'ready' && !state.nemotronScoring && state.reportFallback && (
-          <p className="report-status report-status--warn" role="status">
-            Nemotron could not finish scoring — showing Presage baseline charts from your answers and composure.
+            Showing rule-based feedback now — still waiting on AI scoring (up to ~15s).
           </p>
         )}
 
