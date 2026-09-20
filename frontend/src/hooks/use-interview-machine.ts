@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import type { CharacterId } from '../config/character-expressions'
+import { elevenLabsVoiceIdForCharacter } from '../config/character-voices'
 import type { TurnState } from '../lib/contracts'
-
+import { browserVoiceForCharacter } from '../voice/browser-voice'
 import { synthesizeSpeech } from '../voice/stt'
 
 
@@ -17,29 +19,21 @@ export type SpeakingPhase = 'idle' | 'loading' | 'audible'
  */
 
 interface MachineArgs {
-
   stream: MediaStream | null
-
   micEnabled: boolean
-
+  characterId?: CharacterId | null
   recordAnswers?: boolean
-
   onAnswerRecorded?: (blob: Blob) => void
-
 }
 
 
 
 export function useInterviewMachine({
-
   stream,
-
   micEnabled,
-
+  characterId = null,
   recordAnswers = true,
-
   onAnswerRecorded,
-
 }: MachineArgs) {
 
   const [state, setState] = useState<TurnState>('IDLE')
@@ -76,7 +70,8 @@ export function useInterviewMachine({
 
   recordAnswersRef.current = recordAnswers
 
-
+  const characterIdRef = useRef(characterId)
+  characterIdRef.current = characterId
 
   const stopPlaybackOnly = useCallback(() => {
 
@@ -292,8 +287,9 @@ export function useInterviewMachine({
       window.speechSynthesis.cancel()
 
       const utterance = new SpeechSynthesisUtterance(text)
-
       utterance.rate = 1
+      const voice = browserVoiceForCharacter(characterIdRef.current)
+      if (voice) utterance.voice = voice
 
       utterance.onstart = () => markAudible(token)
 
@@ -328,8 +324,10 @@ export function useInterviewMachine({
         return
       }
 
-      synthesizeSpeech(line)
+      const charId = characterIdRef.current
+      const voiceId = charId ? elevenLabsVoiceIdForCharacter(charId) : undefined
 
+      synthesizeSpeech(line, voiceId)
         .then(async (buf: ArrayBuffer) => {
 
           if (token !== speakTokenRef.current) return

@@ -6,23 +6,18 @@ import json
 import logging
 import os
 import re
+import threading
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
-from nemotron_client import chat_json_object, nemotron_configured, parse_json_object
+from nemotron_client import chat_json_object, nemotron_configured
 
 logger = logging.getLogger(__name__)
-
-GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
-GEMINI_INTERACTIONS_API_REVISION = "2026-05-20"
-DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
-DEFAULT_GEMINI_SESSION_TIMEOUT = 15.0
 
 RubricScores = dict[str, Any]
 
 SETTINGS_SESSION_REPORT_KEY = "session_rubric"
+SETTINGS_NEMOTRON_LOG_TURN_COUNT_KEY = "nemotron_log_turn_count"
 
 JUDGE_SYSTEM = """You are an interview rubric judge. You never speak to the candidate.
 Score only the candidate's answer text. Reply with exactly one JSON object: no markdown,
@@ -335,84 +330,6 @@ def _session_report_from_judge_raw(
     }
 
 
-def gemini_configured() -> bool:
-    return bool(os.getenv("GEMINI_API_KEY", "").strip())
-
-
-def _gemini_session_timeout() -> float:
-    raw = os.getenv("GEMINI_SESSION_TIMEOUT", str(DEFAULT_GEMINI_SESSION_TIMEOUT)).strip()
-    try:
-        return max(5.0, float(raw))
-    except ValueError:
-        return DEFAULT_GEMINI_SESSION_TIMEOUT
-
-
-def _gemini_extract_interaction_text(payload: dict[str, Any]) -> str:
-    direct = payload.get("output_text")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-    steps = payload.get("steps") or []
-    for step in reversed(steps):
-        if not isinstance(step, dict):
-            continue
-        content = step.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                text = block.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-            if parts:
-                return "\n".join(parts).strip()
-    raise ValueError("Gemini interaction returned no text")
-
-
-def _gemini_chat_json_object(
-    system: str,
-    user: str,
-    *,
-    timeout: float,
-    max_tokens: int = 1536,
-) -> dict[str, Any]:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set")
-    model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
-    body: dict[str, Any] = {
-        "model": model,
-        "system_instruction": system,
-        "input": user,
-        "generation_config": {
-            "max_output_tokens": max_tokens,
-            "thinking_level": "minimal",
-        },
-    }
-    request = urllib.request.Request(
-        GEMINI_INTERACTIONS_URL,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-            "Api-Revision": GEMINI_INTERACTIONS_API_REVISION,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini session judge HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Gemini session judge request failed: {exc.reason}") from exc
-    text = _gemini_extract_interaction_text(payload)
-    return parse_json_object(text)
-
-
 def _session_transcript_block(turns: list[dict[str, Any]], job_title: str | None) -> str:
     lines: list[str] = []
     if job_title:
@@ -472,49 +389,9 @@ def _nemotron_session_report(turns: list[dict[str, Any]], job_title: str | None)
     )
 
 
-def _gemini_session_report(turns: list[dict[str, Any]], job_title: str | None) -> dict[str, Any]:
-    transcript = _session_transcript_block(turns, job_title)
-    composure_vals = [
-        float(t["composure"])
-        for t in turns
-        if isinstance(t.get("composure"), (int, float))
-    ]
-    composure_summary = {
-        "samples": composure_vals,
-        "avg": sum(composure_vals) / len(composure_vals) if composure_vals else None,
-        "min": min(composure_vals) if composure_vals else None,
-    }
-    user_content = (
-        "Score this completed interview session.\n\n"
-        f"Composure summary: {composure_summary}\n\n"
-        f"Transcript:\n{transcript}"
-    )
-    session_timeout = _gemini_session_timeout()
-    started = time.perf_counter()
-    raw = _gemini_chat_json_object(
-        SESSION_JUDGE_SYSTEM,
-        user_content,
-        timeout=session_timeout,
-    )
-    logger.info(
-        "Gemini session judge completed in %.1fs (%s turns, timeout=%ss)",
-        time.perf_counter() - started,
-        len(turns),
-        session_timeout,
-    )
-    return _session_report_from_judge_raw(
-        raw, turns, source="gemini", mock=False, fallback=False
-    )
-
-
-def _presage_fallback_report(turns: list[dict[str, Any]]) -> dict[str, Any]:
-    """Charts from heuristics; UI uses transcript rule catalog for strengths/improvements."""
-    return _presage_session_report(turns, fallback=True)
-
-
 def score_session(session_id: str) -> dict[str, Any]:
-    """End-of-session JSON rubric (full transcript + composure)."""
-    from repository import get_session_row, get_turns
+    """End-of-session API report — Presage only (UI copy is client rule catalog)."""
+    from repository import get_turns
 
     turns = get_turns(session_id)
     if not turns:
@@ -526,29 +403,69 @@ def score_session(session_id: str) -> dict[str, Any]:
             "fallback": False,
         }
 
+    return _presage_session_report(turns, fallback=False)
+
+
+def _nemotron_log_summary(report: dict[str, Any]) -> str:
+    rubric = report.get("rubric") if isinstance(report.get("rubric"), dict) else {}
+    per_turn = report.get("per_turn") if isinstance(report.get("per_turn"), list) else []
+    payload = {
+        "source": report.get("source"),
+        "overall": rubric.get("overall"),
+        "structure": rubric.get("structure"),
+        "specificity": rubric.get("specificity"),
+        "confidence": rubric.get("confidence"),
+        "evidence": rubric.get("evidence", [])[:5],
+        "red_flags": rubric.get("red_flags", [])[:5],
+        "per_turn_count": len(per_turn),
+    }
+    return json.dumps(payload, ensure_ascii=True)
+
+
+def _run_nemotron_session_log(session_id: str) -> None:
+    """Background Nemotron judge — results go to server logs only, never the HTTP report."""
+    from repository import get_session_row, get_session_settings, get_turns, set_session_setting
+
+    if not nemotron_configured():
+        return
+
+    turns = get_turns(session_id)
+    if not turns:
+        return
+
+    settings = get_session_settings(session_id)
+    logged_for = settings.get(SETTINGS_NEMOTRON_LOG_TURN_COUNT_KEY)
+    if isinstance(logged_for, int) and logged_for == len(turns):
+        return
+    if isinstance(logged_for, str) and logged_for.isdigit() and int(logged_for) == len(turns):
+        return
+
     row = get_session_row(session_id)
     job_title = (row.get("job_title") or "").strip() if row else None
 
-    if nemotron_configured():
-        try:
-            return _nemotron_session_report(turns, job_title or None)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Nemotron session judge failed: %s", exc)
-            if gemini_configured():
-                try:
-                    return _gemini_session_report(turns, job_title or None)
-                except Exception as gem_exc:  # noqa: BLE001
-                    logger.warning("Gemini session judge failed after Nemotron: %s", gem_exc)
-            return _presage_fallback_report(turns)
+    try:
+        report = _nemotron_session_report(turns, job_title or None)
+        logger.info(
+            "Nemotron session judge (log-only, not applied to report) session=%s turns=%s: %s",
+            session_id,
+            len(turns),
+            _nemotron_log_summary(report),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Nemotron session judge (log-only) failed session=%s: %s",
+            session_id,
+            exc,
+        )
+    finally:
+        set_session_setting(session_id, SETTINGS_NEMOTRON_LOG_TURN_COUNT_KEY, len(turns))
 
-    if gemini_configured():
-        try:
-            return _gemini_session_report(turns, job_title or None)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini session judge failed: %s", exc)
-            return _presage_fallback_report(turns)
 
-    return _presage_session_report(turns, fallback=False)
+def schedule_nemotron_session_log(session_id: str) -> None:
+    """Fire-and-forget Nemotron scoring for observability; does not block or mutate API report."""
+    if not nemotron_configured():
+        return
+    threading.Thread(target=_run_nemotron_session_log, args=(session_id,), daemon=True).start()
 
 
 def apply_session_report_to_turns(

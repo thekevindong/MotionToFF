@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Navigate } from '../App'
-import { getSession as fetchSessionApi, getSessionReport } from '../lib/api'
+import { getSession, getSessionReport } from '../lib/api'
 import type { SessionTurn } from '../lib/api-types'
 import {
   applyPresageScoresToTurns,
@@ -28,9 +28,6 @@ type LoadState =
       status: 'ready'
       turns: SessionTurn[]
       jobTitle: string | null
-      reportFallback: boolean
-      reportSource: string | null
-      nemotronScoring: boolean
     }
 
 export default function Results({ navigate }: { navigate: Navigate }) {
@@ -46,59 +43,16 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   useEffect(() => {
     let cancelled = false
     const sessionId = summary?.sessionId ?? getStoredSessionId()
-    const finishReady = (
-      data: Awaited<ReturnType<typeof getSessionReport>>,
-      opts: { reportFallback: boolean; nemotronScoring: boolean },
-    ) => {
+
+    const load = async () => {
+      const data = sessionId ? await getSessionReport(sessionId) : await getSession()
+      if (cancelled) return
       const turns = applyPresageScoresToTurns(data.turns ?? [])
       setState({
         status: 'ready',
         turns,
         jobTitle: data.job_title ?? null,
-        reportFallback: opts.reportFallback,
-        reportSource: data.session_report?.source ?? null,
-        nemotronScoring: opts.nemotronScoring,
       })
-    }
-
-    const load = async () => {
-      if (!sessionId) {
-        const data = await fetchSessionApi(undefined)
-        finishReady(data, { reportFallback: true, nemotronScoring: false })
-        return
-      }
-
-      let baseline: Awaited<ReturnType<typeof fetchSessionApi>>
-      try {
-        baseline = await fetchSessionApi(sessionId)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Load failed'
-        throw new Error(message)
-      }
-
-      if (!cancelled) {
-        finishReady(baseline, { reportFallback: true, nemotronScoring: true })
-      }
-
-      const reportWaitMs = 17_000
-      try {
-        const data = await Promise.race([
-          getSessionReport(sessionId),
-          new Promise<never>((_, reject) => {
-            window.setTimeout(() => reject(new Error('report_timeout')), reportWaitMs)
-          }),
-        ])
-        if (!cancelled) {
-          finishReady(data, {
-            reportFallback: Boolean(data.session_report?.fallback),
-            nemotronScoring: false,
-          })
-        }
-      } catch {
-        if (!cancelled) {
-          finishReady(baseline, { reportFallback: true, nemotronScoring: false })
-        }
-      }
     }
 
     load().catch((err) => {
@@ -115,9 +69,8 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   const turns = state.status === 'ready' ? state.turns : []
   const overall = computeOverallScore(turns)
   const metrics = buildMetrics(turns)
-  const reportSource = state.status === 'ready' ? state.reportSource : null
-  const strengths = buildReportStrengths(turns, reportSource)
-  const improvements = buildReportImprovements(turns, reportSource)
+  const strengths = buildReportStrengths(turns)
+  const improvements = buildReportImprovements(turns)
   const transcript = buildTranscript(turns)
   const ringScore = overall ?? 0
 
@@ -142,21 +95,13 @@ export default function Results({ navigate }: { navigate: Navigate }) {
             <span className="report-spinner" aria-hidden="true" />
             <div>
               <p className="report-generating-title">Generating your report</p>
-              <p className="report-generating-sub">
-                Loading your session — AI scoring when configured, otherwise instant rule-based feedback.
-              </p>
+              <p className="report-generating-sub">Summarizing your session from your answers and delivery signals.</p>
             </div>
           </div>
         )}
         {state.status === 'error' && (
           <p className="report-status report-status--error" role="alert">
             Could not load report: {state.message}
-          </p>
-        )}
-
-        {state.status === 'ready' && state.nemotronScoring && (
-          <p className="report-status" role="status">
-            Showing rule-based feedback now — still waiting on AI scoring (up to ~15s).
           </p>
         )}
 

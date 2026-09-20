@@ -416,19 +416,6 @@ export function StudioLive({
         <div className="controls-group">
           <button
             type="button"
-            className={`ctrl ${micOn ? '' : 'is-off'}`}
-            onClick={onToggleMic}
-            disabled={controlsBusy || !sessionLive}
-            aria-pressed={micOn}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.6" />
-              <path d="M6 11a6 6 0 0 0 12 0M12 17v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
-            <span>{micOn ? 'Mute' : 'Unmute'}</span>
-          </button>
-          <button
-            type="button"
             className={`ctrl ${statsOpen ? 'is-active' : ''}`}
             onClick={onToggleStats}
             disabled={controlsBusy}
@@ -442,6 +429,19 @@ export function StudioLive({
         </div>
 
         <div className="controls-center">
+          <button
+            type="button"
+            className={`ctrl ctrl--mic-center ${micOn ? '' : 'is-off'}`}
+            onClick={onToggleMic}
+            disabled={controlsBusy || !sessionLive}
+            aria-pressed={micOn}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.6" />
+              <path d="M6 11a6 6 0 0 0 12 0M12 17v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            <span>{micOn ? 'Mute' : 'Unmute'}</span>
+          </button>
           {sessionLive && state === 'LISTENING' && (
             <button
               type="button"

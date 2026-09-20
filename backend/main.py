@@ -46,6 +46,7 @@ from judge import (
     apply_session_report_to_turns,
     pending_turn_scores,
     presage_session_report,
+    schedule_nemotron_session_log,
     score,
     score_session,
 )
@@ -398,6 +399,7 @@ def get_session_report(session_id: str):
     report = _get_or_build_session_report(session_id)
     payload["session_report"] = report
     payload["turns"] = apply_session_report_to_turns(payload["turns"], report)
+    schedule_nemotron_session_log(session_id)
     return payload
 
 

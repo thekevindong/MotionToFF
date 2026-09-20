@@ -91,7 +91,7 @@ function HeroShowcase({ onPlay }: { onPlay: () => void }) {
           <div className="stage-speaker">
             <img src="/images/hr/neutral-0.png" alt="" />
             <div className="stage-caption">
-              <span className="stage-name">Dana — HR Lead</span>
+              <span className="stage-name">Elena — HR Lead</span>
               <div className="stage-wave">
                 {Array.from({ length: 22 }).map((_, i) => (
                   <span key={i} style={{ animationDelay: `${(i % 11) * 0.09}s` }} />
@@ -141,7 +141,7 @@ function HeroShowcase({ onPlay }: { onPlay: () => void }) {
       </div>
 
       <div className="card card--chat" aria-hidden="true">
-        <span className="card-chat-name">Dana</span>
+        <span className="card-chat-name">Elena</span>
         <p>"Walk me through the number you have in mind."</p>
       </div>
     </div>

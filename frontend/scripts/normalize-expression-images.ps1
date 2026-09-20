@@ -2,6 +2,10 @@
 # Place sources under frontend/assets/expression-source/ using the same folder names
 # as the original export (e.g. "uni n rb", "hr m rb"). Run from repo root:
 #   .\frontend\scripts\normalize-expression-images.ps1
+#
+# Folder suffix "n" / "m" = neutral vs stern MOOD packs (not Female/Male voice).
+# Each pack must contain exactly 4 PNGs that sort into this frame order:
+#   0 = rest (eyes open), 1 = talk (mouth open), 2 = blink (eyes closed), 3 = warm smile
 
 $ErrorActionPreference = "Stop"
 $frontendRoot = Split-Path $PSScriptRoot -Parent

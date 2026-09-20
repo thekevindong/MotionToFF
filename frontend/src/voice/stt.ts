@@ -102,10 +102,12 @@ export async function transcribeAudio(blob: Blob, options?: TranscribeAudioOptio
 }
 
 export async function synthesizeSpeech(text: string, voiceId?: string): Promise<ArrayBuffer> {
+  const payload: { text: string; voiceId?: string } = { text }
+  if (voiceId) payload.voiceId = voiceId
   const res = await fetch(`${getApiBase()}/api/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voiceId }),
+    body: JSON.stringify(payload),
   })
   if (!res.ok) {
     throw new Error(`TTS failed (${res.status})`)

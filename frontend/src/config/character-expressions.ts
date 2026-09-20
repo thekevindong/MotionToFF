@@ -3,6 +3,14 @@ import type { Character } from './modes'
 export type CharacterId = Character['id']
 export type ExpressionMood = 'neutral' | 'stern'
 
+/** PNG frame indices under public/images/{id}/{mood}-{n}.png */
+export const EXPRESSION_FRAME = {
+  rest: 0,
+  talk: 1,
+  blink: 2,
+  warm: 3,
+} as const
+
 export function expressionImageUrl(charId: CharacterId, mood: ExpressionMood, frameIndex: number): string {
   const frame = Math.max(0, Math.min(3, frameIndex))
   const prefix = mood === 'neutral' ? 'neutral' : 'stern'

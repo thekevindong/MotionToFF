@@ -291,6 +291,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   } = useInterviewMachine({
     stream,
     micEnabled: micOn,
+    characterId: characterId as CharacterId | null,
     recordAnswers: cloudSttActive,
     onAnswerRecorded: async (blob) => {
       clearTurnWatchdog()
