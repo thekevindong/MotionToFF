@@ -24,6 +24,24 @@ function clamp01(value: number, fallback = 0.5): number {
   return Math.min(1, Math.max(0, value))
 }
 
+const RED_FLAG_LABELS: Record<string, string> = {
+  very_brief_answer: 'Very brief answer',
+  low_composure_on_turn: 'Low composure on this turn',
+  empty_or_too_short: 'Answer was empty or too short',
+}
+
+/** Presage / Nemotron red_flags are often snake_case — show readable copy in the report UI. */
+export function formatRedFlag(flag: string): string {
+  const trimmed = flag.trim()
+  if (!trimmed) return trimmed
+  const known = RED_FLAG_LABELS[trimmed.toLowerCase()]
+  if (known) return known
+  if (!trimmed.includes('_')) return trimmed
+  return trimmed
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
 /** Client-side Presage baseline when /report fails or scores are still pending. */
 export function scoreTurnPresage(answer: string, composure: number): RubricScores {
   const trimmed = answer.trim()
@@ -156,7 +174,7 @@ export function buildImprovements(turns: SessionTurn[], cap = 3): string[] {
   const items: string[] = []
   for (const turn of turns) {
     for (const line of turn.scores.red_flags) {
-      const trimmed = line.trim()
+      const trimmed = formatRedFlag(line)
       if (!trimmed || seen.has(trimmed)) continue
       seen.add(trimmed)
       items.push(trimmed)

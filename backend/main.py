@@ -364,8 +364,6 @@ def get_session_by_id(session_id: str):
 
 
 
-@app.get("/sessions/{session_id}/report")
-
 def _report_cache_valid(cached: dict[str, Any], turn_count: int) -> bool:
     if not isinstance(cached.get("rubric"), dict):
         return False
@@ -394,6 +392,7 @@ def _get_or_build_session_report(session_id: str) -> dict[str, Any]:
     return report
 
 
+@app.get("/sessions/{session_id}/report")
 def get_session_report(session_id: str):
     payload = _session_payload(session_id)
     report = _get_or_build_session_report(session_id)

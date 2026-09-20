@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -218,26 +219,91 @@ def _history_as_recovery_input(history: History) -> str:
     return "\n".join(lines)
 
 
-def _parse_turn_json(raw: str) -> tuple[str, bool]:
-    """Parse Gemini JSON turn; fall back to plain text (no auto-end)."""
-    cleaned = (raw or "").strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
+def _strip_markdown_json_fence(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+    lines = cleaned.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _decode_turn_json_object(text: str) -> dict[str, Any] | None:
+    cleaned = _strip_markdown_json_fence(text)
+    if not cleaned:
+        return None
     try:
         obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
     except json.JSONDecodeError:
-        return _trim_spoken_line(raw), False
-    if not isinstance(obj, dict):
-        return _trim_spoken_line(raw), False
-    spoken = str(obj.get("spoken", "")).strip()
+        pass
+    start = cleaned.find("{")
+    if start < 0:
+        return None
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(cleaned[start:])
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        return None
+    return None
+
+
+def _spoken_from_json_regex(text: str) -> str:
+    match = re.search(
+        r'"spoken"\s*:\s*"((?:\\.|[^"\\])*)"',
+        text,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return ""
+    try:
+        return json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        return match.group(1).replace("\\n", "\n").strip()
+
+
+def _looks_like_json_turn_payload(text: str) -> bool:
+    lowered = text.lower()
+    return '"spoken"' in lowered or '"end_session"' in lowered
+
+
+def _parse_turn_json(raw: str) -> tuple[str, bool]:
+    """Parse Gemini JSON turn; fall back to plain text (never TTS raw JSON)."""
+    cleaned = _strip_markdown_json_fence(raw)
+    obj = _decode_turn_json_object(cleaned)
+    end_session = False
+    spoken = ""
+
+    if obj is not None:
+        end_session = bool(obj.get("end_session", False))
+        for key in ("spoken", "text", "message", "content"):
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                spoken = value.strip()
+                break
+
     if not spoken:
-        return _trim_spoken_line(raw), False
-    return _trim_spoken_line(spoken), bool(obj.get("end_session", False))
+        spoken = _spoken_from_json_regex(cleaned)
+
+    if spoken:
+        return _trim_spoken_line(spoken), end_session
+
+    if _looks_like_json_turn_payload(cleaned):
+        if end_session:
+            return (
+                _trim_spoken_line(
+                    "Thank you — that wraps our practice for today. You can review your report when you're ready."
+                ),
+                True,
+            )
+        return "", False
+
+    return _trim_spoken_line(cleaned or raw), False
 
 
 def _mock_negotiation_complete(history: History, session_id: str | None) -> bool:
@@ -522,7 +588,11 @@ def _gemini_session_closing(
         },
     }
     payload = _create_interaction(body, api_key)
-    return _trim_spoken_line(_extract_interaction_text(payload), max_words=45)
+    raw = _extract_interaction_text(payload)
+    spoken, _ = _parse_turn_json(raw)
+    if spoken:
+        return _trim_spoken_line(spoken, max_words=45)
+    return _trim_spoken_line(raw, max_words=45)
 
 
 def _history_from_session(session_id: str | None) -> History:
