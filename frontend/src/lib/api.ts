@@ -1,3 +1,4 @@
+import type { SpeakingDurationId } from '../config/speaking-duration'
 import type {
   CreateSessionResponse,
   HealthResponse,
@@ -11,6 +12,10 @@ import type {
   CreateSessionInput,
   UploadDocumentResponse,
   VoiceStatusResponse,
+  SpeechesCatalogResponse,
+  SpeakingPrepareResponse,
+  SpeakingCompleteInput,
+  SpeakingCompleteResponse,
 } from './api-types'
 
 const API_BASE =
@@ -50,6 +55,8 @@ export async function createSession(input?: CreateSessionInput): Promise<CreateS
   const scenarioId = input?.scenarioId?.trim()
   const characterId = input?.characterId?.trim()
   const sessionDurationSec = input?.sessionDurationSec
+  const speakingDuration =
+    scenarioId === 'speaking' && typeof sessionDurationSec === 'number'
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -57,8 +64,9 @@ export async function createSession(input?: CreateSessionInput): Promise<CreateS
       job_title: jobTitle || null,
       scenario_id: scenarioId || null,
       character_id: characterId || null,
-      session_duration_sec:
-        typeof sessionDurationSec === 'number' && sessionDurationSec > 0
+      session_duration_sec: speakingDuration
+        ? sessionDurationSec
+        : typeof sessionDurationSec === 'number' && sessionDurationSec > 0
           ? sessionDurationSec
           : null,
     }),
@@ -78,6 +86,54 @@ export async function uploadDocument(
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/documents`, {
     method: 'POST',
     body: form,
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function getSpeeches(): Promise<SpeechesCatalogResponse> {
+  const res = await fetch(`${API_BASE}/speeches`)
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function postSpeakingComplete(
+  sessionId: string,
+  body: SpeakingCompleteInput,
+): Promise<SpeakingCompleteResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/speaking/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      transcript: body.transcript,
+      elapsed_sec: body.elapsedSec,
+      finished_in_time: body.finishedInTime,
+      ended_by: body.endedBy,
+      samples: body.samples,
+      summary: body.summary,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function postSpeakingPrepare(
+  sessionId: string,
+  body: { speechId: string; durationMode: SpeakingDurationId },
+): Promise<SpeakingPrepareResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/speaking/prepare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      speech_id: body.speechId,
+      duration_mode: body.durationMode,
+    }),
   })
   if (!res.ok) {
     throw new Error(await parseError(res))

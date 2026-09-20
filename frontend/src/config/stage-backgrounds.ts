@@ -2,13 +2,37 @@ import type { Character } from './modes'
 
 export type CharacterId = Character['id']
 
+export type AudiencePhase = 'empty' | 'house' | 'reacting'
+export type AudienceReaction = 'engaged' | 'tense' | 'warm'
+
+const AUDITORIUM_BASE = '/backgrounds/auditorium'
+
+/** Auditorium backdrop for public speaking / thesis (face-driven reactions in Phase 5). */
+export function audienceStageUrl(
+  phase: AudiencePhase,
+  reaction: AudienceReaction | null,
+): string {
+  if (phase === 'empty') {
+    return `${AUDITORIUM_BASE}/aud_empty.png`
+  }
+  if (phase === 'reacting' && reaction) {
+    const reactionFile: Record<AudienceReaction, string> = {
+      engaged: 'aud_react_engaged.png',
+      tense: 'aud_react_tense.png',
+      warm: 'aud_react_warm.png',
+    }
+    return `${AUDITORIUM_BASE}/${reactionFile[reaction]}`
+  }
+  return `${AUDITORIUM_BASE}/aud_filled.png`
+}
+
 /** Static stage backdrops served from /public/backgrounds */
 export function stageBackgroundUrl(modeId: string, characterId: CharacterId | null): string {
   switch (modeId) {
     case 'thesis':
-      return '/backgrounds/auditorium/aud_empty.png'
+      return audienceStageUrl('empty', null)
     case 'speaking':
-      return '/backgrounds/auditorium/aud_filled.png'
+      return audienceStageUrl('house', null)
     case 'salary':
     case 'interview':
     default: {

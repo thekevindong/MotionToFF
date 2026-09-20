@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react'
 
 import { StageCaptionStack } from '../components/StageCaptionStack'
 import type { PresageMetricRow } from '../hooks/use-presage-metrics'
 import type { TurnState } from '../lib/contracts'
 import type { Character, Mode } from '../config/modes'
+import type { SpeakingFlowState } from '../hooks/use-speaking-session'
 
 const STATE_LABELS: Record<TurnState, string> = {
   IDLE: 'Ready',
@@ -11,6 +20,13 @@ const STATE_LABELS: Record<TurnState, string> = {
   LISTENING: 'Listening…',
   THINKING: 'Processing…',
   REPORT: 'Session ended',
+}
+
+const SPEAKING_STATE_LABELS: Record<SpeakingFlowState, string> = {
+  READY: 'Ready to start',
+  DELIVERING: 'Delivering…',
+  SUBMITTING: 'Saving…',
+  DONE: 'Session ended',
 }
 
 const CAM_TILE_POS_KEY = 'speakup_camtile_pos'
@@ -241,7 +257,8 @@ function PresagePane({
 export type StudioLiveProps = {
   onLeaveStudio: () => void
   mode: Mode
-  character: Character
+  character: Character | null
+  speakingSummary?: { title: string; speaker: string } | null
   sessionLive: boolean
   sessionClosing?: boolean
   generatingReport?: boolean
@@ -275,12 +292,15 @@ export type StudioLiveProps = {
   onAnswerNow: () => void
   onEndSession: () => void
   transcribing: boolean
+  speakingFlow?: SpeakingFlowState
+  teleprompterOverlay?: ReactNode
 }
 
 export function StudioLive({
   onLeaveStudio,
   mode,
   character,
+  speakingSummary = null,
   sessionLive,
   sessionClosing = false,
   generatingReport = false,
@@ -314,7 +334,16 @@ export function StudioLive({
   onAnswerNow,
   onEndSession,
   transcribing,
+  speakingFlow,
+  teleprompterOverlay,
 }: StudioLiveProps) {
+  const isSpeaking = mode.id === 'speaking'
+  const summaryLabel = isSpeaking && speakingSummary
+    ? `${speakingSummary.title} · ${speakingSummary.speaker}`
+    : character
+      ? `${mode.title} · ${character.name}`
+      : mode.title
+
   return (
     <>
       <header className="studio-top">
@@ -322,14 +351,16 @@ export function StudioLive({
           <img src="/brand/speakup-logo-horizontal.png" alt="SpeakUp" height={26} />
         </button>
         <div className="studio-summary" aria-label="Session setup">
-          <span className="studio-summary-chip">
-            {mode.title} · {character.name}
-          </span>
+          <span className="studio-summary-chip">{summaryLabel}</span>
         </div>
         <div className="studio-top-right">
           {sessionLive && (
             <span className="studio-state-pill" data-state={sessionClosing ? 'REPORT' : state}>
-              {sessionClosing ? 'Wrapping up…' : STATE_LABELS[state]}
+              {sessionClosing
+                ? 'Wrapping up…'
+                : isSpeaking && speakingFlow
+                  ? SPEAKING_STATE_LABELS[speakingFlow]
+                  : STATE_LABELS[state]}
             </span>
           )}
           <span
@@ -356,6 +387,7 @@ export function StudioLive({
             draggable={false}
           />
           <div className="stage-bg-scrim" aria-hidden="true" />
+          {isSpeaking && teleprompterOverlay}
           <img className="stage-watermark" src="/brand/speakup-icon-white.png" alt="" aria-hidden="true" />
 
           {!statsOpen && (
@@ -372,13 +404,17 @@ export function StudioLive({
           />
 
           <div className="opponent">
-            <div className="opponent-frame">
-              <img className="opponent-video" src={opponentImg} alt={`${character.name}, ${character.tone}`} />
-            </div>
-            <span className="opponent-tag">
-              <span className={`opponent-dot opponent-dot--${character.id}`} />
-              {character.name} · {character.tone}
-            </span>
+            {!isSpeaking && character && (
+              <>
+                <div className="opponent-frame">
+                  <img className="opponent-video" src={opponentImg} alt={`${character.name}, ${character.tone}`} />
+                </div>
+                <span className="opponent-tag">
+                  <span className={`opponent-dot opponent-dot--${character.id}`} />
+                  {character.name} · {character.tone}
+                </span>
+              </>
+            )}
             <StageCaptionStack
               visible={sessionLive}
               aiLine={aiCaptionLine}
@@ -442,7 +478,27 @@ export function StudioLive({
             </svg>
             <span>{micOn ? 'Mute' : 'Unmute'}</span>
           </button>
-          {sessionLive && state === 'LISTENING' && (
+          {sessionLive && isSpeaking && speakingFlow === 'READY' && (
+            <button type="button" className="end-btn" onClick={onAnswerNow} disabled={controlsBusy}>
+              Start speech
+            </button>
+          )}
+          {sessionLive && isSpeaking && speakingFlow === 'DELIVERING' && (
+            <>
+              <button type="button" className="end-btn" onClick={onSubmitAnswer} disabled={controlsBusy}>
+                Finish speech
+              </button>
+              <button type="button" className="end-btn end-btn--ghost" onClick={onEndSession} disabled={controlsBusy}>
+                End &amp; get report
+              </button>
+            </>
+          )}
+          {sessionLive && isSpeaking && (speakingFlow === 'SUBMITTING' || transcribing) && (
+            <span className="end-btn end-btn--ghost end-btn--static" aria-live="polite">
+              {transcribing ? 'Saving…' : 'Processing…'}
+            </span>
+          )}
+          {sessionLive && !isSpeaking && state === 'LISTENING' && (
             <button
               type="button"
               className="end-btn end-btn--ghost"
@@ -452,22 +508,29 @@ export function StudioLive({
               Send now
             </button>
           )}
-          {sessionLive && state === 'ASKING' && (
+          {sessionLive && !isSpeaking && state === 'ASKING' && (
             <button type="button" className="end-btn end-btn--ghost" onClick={onAnswerNow}>
               Answer now
             </button>
           )}
-          {sessionLive && (state === 'THINKING' || transcribing) && (
+          {sessionLive &&
+            !isSpeaking &&
+            (state === 'THINKING' || transcribing) && (
             <span className="end-btn end-btn--ghost end-btn--static" aria-live="polite">
               {transcribing ? 'Transcribing…' : 'Processing…'}
             </span>
           )}
-          {sessionLive && state !== 'LISTENING' && state !== 'ASKING' && state !== 'THINKING' && !transcribing && (
+          {sessionLive &&
+            !isSpeaking &&
+            state !== 'LISTENING' &&
+            state !== 'ASKING' &&
+            state !== 'THINKING' &&
+            !transcribing && (
             <button type="button" className="end-btn" onClick={onEndSession}>
               End &amp; get report
             </button>
           )}
-          {sessionLive && (state === 'LISTENING' || state === 'ASKING') && (
+          {sessionLive && !isSpeaking && (state === 'LISTENING' || state === 'ASKING') && (
             <button type="button" className="end-btn end-btn--ghost" onClick={onEndSession}>
               End &amp; get report
             </button>

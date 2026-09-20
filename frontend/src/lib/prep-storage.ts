@@ -1,10 +1,14 @@
+import type { SpeakingDurationId } from '../config/speaking-duration'
+
 const PREP_COMPLETE_KEY = 'speakup_prep_complete'
 const PREP_DEFAULTS_KEY = 'speakup_prep_defaults'
 
 export type PrepDefaults = {
   modeId: string
-  characterId: string
+  characterId?: string
   sessionDurationSec?: number
+  speechId?: string
+  speakingDurationId?: SpeakingDurationId
 }
 
 export function readPrepDefaults(): Partial<PrepDefaults> {

@@ -10,6 +10,10 @@ import {
   DEFAULT_SESSION_DURATION_SEC,
   isAllowedSessionDuration,
 } from '../config/session-duration'
+import {
+  speakingDurationSeconds,
+  type SpeakingDurationId,
+} from '../config/speaking-duration'
 import { useBrowserSpeechCapture } from '../hooks/use-browser-speech-capture'
 import { useComposureReactions, useInterjectDevShortcut } from '../hooks/use-composure-reactions'
 import { useComposureSampler } from '../hooks/use-composure-sampler'
@@ -29,10 +33,11 @@ import {
   getVoiceStatus,
   getSessionReport,
   postSessionClose,
+  postSpeakingPrepare,
   postTurn,
   uploadDocument,
 } from '../lib/api'
-import type { TurnResponse } from '../lib/api-types'
+import type { SpeechCatalogItem, SpeakingPrepareResponse, TurnResponse } from '../lib/api-types'
 import {
   clearPrepComplete,
   isLiveStudioPath,
@@ -42,10 +47,12 @@ import {
   writePrepDefaults,
 } from '../lib/prep-storage'
 import { getStoredSessionId, setStoredSessionId } from '../lib/session-storage'
+import { speakingPrepFromSettings } from '../lib/speaking-restore'
 import { setSession } from '../session'
 import { sttBackoffDelayMs, transcribeAudio } from '../voice/stt'
 import { VAD_CONFIG } from '../voice/vad-config'
 import { StudioLive } from './StudioLive'
+import { SpeakingLive } from './SpeakingLive'
 import { StudioPrep } from './StudioPrep'
 import './Setup.css'
 
@@ -86,6 +93,14 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const [studioPhase, setStudioPhase] = useState<'prep' | 'live'>(initialStudioPhase)
   const [modeId, setModeId] = useState<string | null>(defaults.modeId ?? 'salary')
   const [charId, setCharId] = useState<string | null>(defaults.characterId ?? null)
+  const [speechId, setSpeechId] = useState<string | null>(defaults.speechId ?? null)
+  const [speakingDurationId, setSpeakingDurationId] = useState<SpeakingDurationId>(
+    defaults.speakingDurationId ?? '30',
+  )
+  const [speechMeta, setSpeechMeta] = useState<{ title: string; speaker: string } | null>(null)
+  const [speakingPrep, setSpeakingPrep] = useState<SpeakingPrepareResponse | null>(null)
+  const [speakingRestore, setSpeakingRestore] = useState<'idle' | 'loading' | 'done'>('idle')
+  const [speakingRestartNote, setSpeakingRestartNote] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
   const [seconds, setSeconds] = useState(0)
   const [sessionDurationSec, setSessionDurationSec] = useState(initialSessionDurationSec)
@@ -137,13 +152,14 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const composureSampleRef = useRef<ComposureSample | null>(null)
 
   const mode = MODES.find((m) => m.id === modeId) ?? null
+  const isSpeakingMode = mode?.id === 'speaking'
   const character = SALARY_CHARACTERS.find((c) => c.id === charId) ?? null
-  const characterId = character?.id ?? null
+  const characterId = isSpeakingMode ? null : (character?.id ?? null)
 
   const { stream, status: mediaStatus, error: mediaError, request, stop, setMicEnabled, setVideoEnabled } =
     useMediaStream()
 
-  const askRef = useRef<(q: string, options?: { onSpoken?: () => void }) => void>(() => {})
+  const askRef = useRef<(q: string, options?: { onSpoken?: () => void; holdFloor?: boolean }) => void>(() => {})
 
   useInterjectDevShortcut(() => {
     setDevForceStress((on) => {
@@ -542,7 +558,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const speechWpm = presageMetricsBundle.speechWpm
 
   useComposureReactions({
-    active: sessionInteractive && !!reactionSessionId,
+    active: sessionInteractive && !!reactionSessionId && !isSpeakingMode,
     sessionId: reactionSessionId,
     sample: composureSample,
     vitals: presageVitals,
@@ -702,6 +718,57 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     }
   }, [studioPhase, started, navigate])
 
+  useEffect(() => {
+    if (!isSpeakingMode || studioPhase !== 'live' || speakingPrep) {
+      if (speakingPrep) setSpeakingRestore('done')
+      return
+    }
+    let cancelled = false
+    setSpeakingRestore('loading')
+    void (async () => {
+      const sessionId = getStoredSessionId()
+      if (!sessionId) {
+        if (!cancelled) {
+          clearPrepComplete()
+          navigate('/start')
+          setSpeakingRestore('idle')
+        }
+        return
+      }
+      try {
+        const data = await getSession(sessionId)
+        if (data.turns?.length) {
+          navigate('/results')
+          return
+        }
+        const prep = speakingPrepFromSettings(data.settings)
+        if (!prep) throw new Error('missing teleprompter')
+        if (cancelled) return
+        setSpeakingPrep(prep)
+        const dur = data.settings?.session_duration_sec
+        if (typeof dur === 'number' && dur >= 0) setSessionDurationSec(dur)
+        if (data.settings?.speech_id) setSpeechId(data.settings.speech_id)
+        if (data.settings?.speech_title && data.settings?.speaker) {
+          setSpeechMeta({ title: data.settings.speech_title, speaker: data.settings.speaker })
+        }
+        setSpeakingRestartNote(
+          'Refresh restarted delivery — teleprompter restored from your session. Tap Start speech when ready.',
+        )
+        setSpeakingRestore('done')
+      } catch {
+        if (!cancelled) {
+          clearPrepComplete()
+          setStartError('Session expired after refresh — pick your speech and launch again.')
+          navigate('/start')
+          setSpeakingRestore('idle')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isSpeakingMode, navigate, speakingPrep, studioPhase])
+
   const resetStudio = useCallback(() => {
     finish()
     reset()
@@ -730,12 +797,17 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     sessionTimeUpHandledRef.current = false
     setLingeringUserCaption('')
     setGeneratingReport(false)
+    setSpeakingPrep(null)
+    setSpeakingRestartNote(null)
+    setSpeakingRestore('idle')
     clearPrepComplete()
     setStudioPhase('prep')
   }, [browserSpeech, finish, reset, stop])
 
   const startSession = async () => {
-    if (!mode || !character || !mode.ready || starting) return false
+    if (!mode || !mode.ready || starting) return false
+    if (mode.id === 'speaking' && !speechId) return false
+    if (mode.id !== 'speaking' && !character) return false
     setStartError(null)
     setTurnError(null)
     setVoiceHint(null)
@@ -746,29 +818,60 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       setCloudSttConfigured(voice.stt)
       cloudSttFailureStreakRef.current = 0
       setCloudSttPausedUntil(0)
-      if (!voice.tts) {
-        setVoiceHint('Interviewer voice uses your browser until ELEVENLABS_API_KEY is set on the backend.')
-      }
-      if (!voice.stt) {
+      if (mode.id !== 'speaking') {
+        if (!voice.tts) {
+          setVoiceHint('Interviewer voice uses your browser until ELEVENLABS_API_KEY is set on the backend.')
+        }
+        if (!voice.stt) {
+          setVoiceHint(
+            (prev) =>
+              prev ??
+              'Answers use browser speech recognition until ELEVENLABS_API_KEY is set on the backend.',
+          )
+        }
+      } else if (!voice.stt) {
         setVoiceHint(
-          (prev) =>
-            prev ??
-            'Answers use browser speech recognition until ELEVENLABS_API_KEY is set on the backend.',
+          'Speech captions use browser recognition until ELEVENLABS_API_KEY is set on the backend.',
         )
       }
-      const media = await request()
-      if (!media) {
-        setStartError(mediaError ?? 'Microphone and camera access are required to start.')
-        return false
+      if (mode.id !== 'speaking') {
+        const media = await request()
+        if (!media) {
+          setStartError(mediaError ?? 'Microphone and camera access are required to start.')
+          return false
+        }
+        setVideoOn(true)
       }
-      setVideoOn(true)
+      if (mode.id === 'speaking') {
+        const media = await request()
+        if (!media) {
+          setStartError(mediaError ?? 'Microphone and camera access are required to start.')
+          return false
+        }
+        setVideoOn(true)
+        const durationSec = speakingDurationSeconds(speakingDurationId)
+        const title = speechMeta?.title ?? 'Speech'
+        const { session_id } = await createSession({
+          jobTitle: `Public speaking — ${title}`,
+          scenarioId: 'speaking',
+          sessionDurationSec: durationSec,
+        })
+        const prep = await postSpeakingPrepare(session_id, {
+          speechId: speechId!,
+          durationMode: speakingDurationId,
+        })
+        setSpeakingPrep(prep)
+        setStoredSessionId(session_id)
+        setSessionDurationSec(durationSec)
+        return true
+      }
       const jobTitle =
         contextJobTitle.trim() ||
-        (mode.id === 'salary' ? `Salary negotiation — ${character.name}` : character.name)
+        (mode.id === 'salary' ? `Salary negotiation — ${character!.name}` : character!.name)
       const { session_id } = await createSession({
         jobTitle,
         scenarioId: mode.id,
-        characterId: character.id,
+        characterId: character!.id,
         sessionDurationSec,
       })
       for (const file of pendingContextFiles) {
@@ -792,11 +895,15 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }
 
   const enterStudio = async () => {
-    if (!mode || !character) return
+    if (!mode) return
+    if (mode.id === 'speaking' && !speechId) return
+    if (mode.id !== 'speaking' && !character) return
     writePrepDefaults({
       modeId: mode.id,
-      characterId: character.id,
-      sessionDurationSec,
+      characterId: character?.id,
+      sessionDurationSec: mode.id === 'speaking' ? speakingDurationSeconds(speakingDurationId) : sessionDurationSec,
+      speechId: mode.id === 'speaking' ? speechId ?? undefined : undefined,
+      speakingDurationId: mode.id === 'speaking' ? speakingDurationId : undefined,
     })
     markPrepComplete()
     setStudioPhase('live')
@@ -931,7 +1038,25 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const onModeChange = (m: Mode) => {
     setModeId(m.id)
     setCharId(null)
+    setSpeechId(null)
+    setSpeechMeta(null)
+    if (m.id === 'speaking') {
+      setSessionDurationSec(speakingDurationSeconds(speakingDurationId))
+    }
     writePrepDefaults({ modeId: m.id })
+  }
+
+  const onSpeechSelect = (speech: SpeechCatalogItem) => {
+    setSpeechId(speech.id)
+    setSpeechMeta({ title: speech.title, speaker: speech.speaker })
+    writePrepDefaults({ speechId: speech.id })
+  }
+
+  const onSpeakingDurationChange = (id: SpeakingDurationId) => {
+    setSpeakingDurationId(id)
+    const sec = speakingDurationSeconds(id)
+    setSessionDurationSec(sec)
+    writePrepDefaults({ speakingDurationId: id, sessionDurationSec: sec })
   }
 
   const onCharChange = (c: Character) => {
@@ -970,8 +1095,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         <StudioPrep
           modeId={modeId}
           charId={charId}
+          speechId={speechId}
+          speakingDurationId={speakingDurationId}
           onModeChange={onModeChange}
           onCharChange={onCharChange}
+          onSpeechSelect={onSpeechSelect}
+          onSpeakingDurationChange={onSpeakingDurationChange}
           contextJobTitle={contextJobTitle}
           onContextJobTitleChange={setContextJobTitle}
           pendingContextFiles={pendingContextFiles}
@@ -988,9 +1117,45 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     )
   }
 
-  if (!mode || !character) {
+  if (!mode || (!isSpeakingMode && !character)) {
     navigate('/start')
     return null
+  }
+
+  const speakingSummary =
+    isSpeakingMode && (speakingPrep || speechMeta)
+      ? {
+          title: speakingPrep?.speech_title ?? speechMeta?.title ?? 'Speech',
+          speaker: speakingPrep?.speaker ?? speechMeta?.speaker ?? 'Speaker',
+        }
+      : null
+
+  if (isSpeakingMode && !speakingPrep) {
+    if (speakingRestore === 'loading') {
+      return (
+        <div className="studio studio--prep">
+          <p className="prep-panel-sub">Restoring your speaking session…</p>
+        </div>
+      )
+    }
+    return null
+  }
+
+  if (isSpeakingMode && speakingPrep && speakingSummary) {
+    return (
+      <SpeakingLive
+        mode={mode}
+        prep={speakingPrep}
+        speakingSummary={speakingSummary}
+        sessionDurationSec={sessionDurationSec}
+        onLeaveStudio={leaveStudio}
+        restartNote={speakingRestartNote}
+        onNavigateResults={() => {
+          resetStudio()
+          navigate('/results')
+        }}
+      />
+    )
   }
 
   return (
@@ -999,6 +1164,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         onLeaveStudio={leaveStudio}
         mode={mode}
         character={character}
+        speakingSummary={speakingSummary}
         sessionLive={sessionLive}
         sessionClosing={sessionClosing || sessionTimeUpPending}
         started={started}

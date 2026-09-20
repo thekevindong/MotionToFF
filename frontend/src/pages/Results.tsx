@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Navigate } from '../App'
 import { getSession as fetchSession, getSessionReport } from '../lib/api'
-import type { SessionTurn } from '../lib/api-types'
+import type { SessionPersonaSettings, SessionReportPayload, SessionTurn } from '../lib/api-types'
 import {
   applyPresageScoresToTurns,
   buildReportImprovements,
@@ -21,6 +21,13 @@ function fmtDuration(sec: number) {
   return `${m}m ${s.toString().padStart(2, '0')}s`
 }
 
+function fmtSpeakingDuration(mode: string | undefined, elapsedSec: number): string {
+  if (mode === '30') return `30s timed · ${fmtDuration(elapsedSec)} spoken`
+  if (mode === '45') return `45s timed · ${fmtDuration(elapsedSec)} spoken`
+  if (mode === 'full') return `Full length · ${fmtDuration(elapsedSec)}`
+  return fmtDuration(elapsedSec)
+}
+
 type LoadState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
@@ -28,6 +35,8 @@ type LoadState =
       status: 'ready'
       turns: SessionTurn[]
       jobTitle: string | null
+      settings: SessionPersonaSettings | undefined
+      sessionReport: SessionReportPayload | undefined
     }
 
 export default function Results({ navigate }: { navigate: Navigate }) {
@@ -36,7 +45,6 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   const opponent = summary?.opponent ?? 'HR Lead'
   const tone = summary?.tone ?? 'Strict & Harsh'
   const img = summary?.opponentImg ?? '/images/hr/neutral-0.png'
-  const duration = summary ? fmtDuration(summary.durationSec) : '—'
 
   const [state, setState] = useState<LoadState>({ status: 'loading' })
 
@@ -52,6 +60,8 @@ export default function Results({ navigate }: { navigate: Navigate }) {
         status: 'ready',
         turns,
         jobTitle: data.job_title ?? null,
+        settings: data.settings,
+        sessionReport: data.session_report,
       })
     }
 
@@ -67,12 +77,29 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   }, [summary?.sessionId])
 
   const turns = state.status === 'ready' ? state.turns : []
+  const settings = state.status === 'ready' ? state.settings : undefined
+  const sessionReport = state.status === 'ready' ? state.sessionReport : undefined
+  const scenarioId = settings?.scenario_id ?? (summary?.opponentRole === 'Speaker' ? 'speaking' : undefined)
+  const isSpeaking = scenarioId === 'speaking'
+  const reportOptions = { scenarioId, settings, sessionReport }
+  const elapsedSec =
+    settings?.delivery_stats?.elapsed_sec ?? summary?.durationSec ?? 0
+  const durationDisplay = isSpeaking
+    ? fmtSpeakingDuration(settings?.duration_mode, elapsedSec)
+    : summary
+      ? fmtDuration(summary.durationSec)
+      : '—'
+  const opponentLabel = isSpeaking ? 'Speaker' : 'Opponent'
+  const opponentValue = isSpeaking
+    ? `${opponent}${tone ? ` · ${tone}` : ''}`
+    : `${opponent} · ${tone}`
   const overall = computeOverallScore(turns)
-  const metrics = buildMetrics(turns)
-  const strengths = buildReportStrengths(turns)
-  const improvements = buildReportImprovements(turns)
+  const metrics = buildMetrics(turns, reportOptions)
+  const strengths = buildReportStrengths(turns, undefined, reportOptions)
+  const improvements = buildReportImprovements(turns, undefined, reportOptions)
   const transcript = buildTranscript(turns)
   const ringScore = overall ?? 0
+  const teleprompterLabel = isSpeaking ? 'Teleprompter' : opponent
 
   const practiceAgain = () => {
     clearSessionSummary()
@@ -121,7 +148,9 @@ export default function Results({ navigate }: { navigate: Navigate }) {
             </h1>
             <p className="report-lead">
               {turns.length > 0
-                ? `Here is the full breakdown of your ${mode.toLowerCase()} session against ${opponent}. Review the read, then run it back.`
+                ? isSpeaking
+                  ? `Here is the full breakdown of your public speaking delivery${opponent !== 'HR Lead' ? ` as ${opponent}` : ''}. Review the read, then run it back.`
+                  : `Here is the full breakdown of your ${mode.toLowerCase()} session against ${opponent}. Review the read, then run it back.`
                 : `Your studio session is on the server${state.status === 'ready' && state.jobTitle ? ` (${state.jobTitle})` : ''}. Answer questions in the studio to fill this report.`}
             </p>
             <div className="report-meta">
@@ -130,14 +159,12 @@ export default function Results({ navigate }: { navigate: Navigate }) {
                 <span className="report-meta-v">{mode}</span>
               </span>
               <span className="report-meta-item">
-                <span className="report-meta-k">Opponent</span>
-                <span className="report-meta-v">
-                  {opponent} · {tone}
-                </span>
+                <span className="report-meta-k">{opponentLabel}</span>
+                <span className="report-meta-v">{opponentValue}</span>
               </span>
               <span className="report-meta-item">
                 <span className="report-meta-k">Duration</span>
-                <span className="report-meta-v">{duration}</span>
+                <span className="report-meta-v">{durationDisplay}</span>
               </span>
             </div>
           </div>
@@ -244,6 +271,8 @@ export default function Results({ navigate }: { navigate: Navigate }) {
                     <span className="bubble-who">
                       {line.who === 'you' ? (
                         'You'
+                      ) : isSpeaking ? (
+                        teleprompterLabel
                       ) : (
                         <img src={img || '/placeholder.svg'} alt={opponent} className="bubble-avatar" />
                       )}

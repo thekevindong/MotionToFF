@@ -65,8 +65,24 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES sessions(id)
             );
+            CREATE TABLE IF NOT EXISTS speeches (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL UNIQUE,
+                speaker TEXT NOT NULL,
+                title TEXT NOT NULL,
+                excerpt_text TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                word_count INTEGER NOT NULL,
+                est_full_duration_sec INTEGER NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
             """
         )
+    from seed_speeches import seed_speeches
+
+    with _connect() as conn:
+        seed_speeches(conn)
 
 
 def create_session(
@@ -275,6 +291,46 @@ def list_documents(session_id: str) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def _speech_teaser(excerpt_text: str, max_len: int = 160) -> str:
+    text = (excerpt_text or "").strip().replace("\n", " ")
+    if len(text) <= max_len:
+        return text
+    trimmed = text[: max_len - 1].rsplit(" ", 1)[0]
+    return f"{trimmed}…"
+
+
+def _speech_row_to_catalog(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "speaker": row["speaker"],
+        "title": row["title"],
+        "teaser": _speech_teaser(row["excerpt_text"]),
+        "word_count": row["word_count"],
+        "est_full_duration_sec": row["est_full_duration_sec"],
+    }
+
+
+def list_speeches() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, slug, speaker, title, excerpt_text, word_count, est_full_duration_sec
+            FROM speeches
+            ORDER BY sort_order ASC, title ASC
+            """
+        ).fetchall()
+    return [_speech_row_to_catalog(r) for r in rows]
+
+
+def get_speech(speech_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM speeches WHERE id = ?", (speech_id,)).fetchone()
+    if not row:
+        return None
+    return dict(row)
 
 
 def get_documents_for_context(session_id: str) -> list[tuple[str, str]]:

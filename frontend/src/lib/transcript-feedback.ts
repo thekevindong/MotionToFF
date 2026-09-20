@@ -1,4 +1,4 @@
-import type { SessionTurn } from './api-types'
+import type { SessionPersonaSettings, SessionReportPayload, SessionTurn } from './api-types'
 
 /** Signals derived from the session transcript — keep predicates simple and testable. */
 export type TranscriptSignals = {
@@ -15,6 +15,19 @@ export type TranscriptSignals = {
   hasAnchorLanguage: boolean
   hasTradeoffLanguage: boolean
   askedClarifyingQuestion: boolean
+  scenarioId?: string
+  teleprompterCoverage?: number
+  finishedInTime?: boolean
+  durationMode?: string
+  avgWpm?: number | null
+  fillerCount?: number
+  endedBy?: string
+}
+
+export type TranscriptFeedbackOptions = {
+  scenarioId?: string
+  settings?: SessionPersonaSettings
+  sessionReport?: SessionReportPayload
 }
 
 export type FeedbackCatalogEntry = {
@@ -34,7 +47,10 @@ const TRADEOFF_LANGUAGE =
   /\b(flexible|willing|if you can|in exchange|trade[- ]?off|instead|alternatively|open to|remote|start date|signing)\b/i
 const CLARIFYING_QUESTION = /\?\s*$|^(what|how|can you|could you|which|is there)\b/i
 
-export function analyzeTranscript(turns: SessionTurn[]): TranscriptSignals {
+export function analyzeTranscript(
+  turns: SessionTurn[],
+  options?: TranscriptFeedbackOptions,
+): TranscriptSignals {
   const answers = turns.map((t) => t.answer?.trim() ?? '')
   const wordCounts = answers.map((a) => (a ? a.split(/\s+/).length : 0))
   const allText = answers.join(' ')
@@ -44,6 +60,9 @@ export function analyzeTranscript(turns: SessionTurn[]): TranscriptSignals {
   const minComposure = composure.length > 0 ? Math.min(...composure) : 0.5
   const totalWords = wordCounts.reduce((a, b) => a + b, 0)
   const answeredTurnCount = answers.filter((a) => a.length > 0).length
+  const settings = options?.settings
+  const rubric = options?.sessionReport?.rubric
+  const summary = settings?.delivery_stats?.summary
 
   return {
     turnCount: turns.length,
@@ -59,6 +78,13 @@ export function analyzeTranscript(turns: SessionTurn[]): TranscriptSignals {
     hasAnchorLanguage: ANCHOR_LANGUAGE.test(allText),
     hasTradeoffLanguage: TRADEOFF_LANGUAGE.test(allText),
     askedClarifyingQuestion: answers.some((a) => CLARIFYING_QUESTION.test(a)),
+    scenarioId: options?.scenarioId ?? settings?.scenario_id,
+    teleprompterCoverage: rubric?.teleprompter_coverage,
+    finishedInTime: settings?.finished_in_time ?? rubric?.timing?.finished_in_time,
+    durationMode: settings?.duration_mode ?? rubric?.timing?.mode,
+    avgWpm: summary?.avg_wpm ?? null,
+    fillerCount: summary?.filler_count ?? 0,
+    endedBy: settings?.delivery_stats?.ended_by,
   }
 }
 
@@ -139,6 +165,126 @@ export const STRENGTH_CATALOG: FeedbackCatalogEntry[] = [
     id: 'completed_practice',
     priority: 2,
     text: 'You completed a live practice round — repetition here builds the reflexes you will use in the real conversation.',
+    when: (s) => s.turnCount >= 1 && s.scenarioId !== 'speaking',
+  },
+]
+
+export const SPEAKING_STRENGTH_CATALOG: FeedbackCatalogEntry[] = [
+  {
+    id: 'strong_coverage',
+    priority: 10,
+    text: 'You hit most of the teleprompter lines — the audience hears the intended message, not an improvised summary.',
+    when: (s) => (s.teleprompterCoverage ?? 0) >= 0.62,
+  },
+  {
+    id: 'steady_composure_speaking',
+    priority: 9,
+    text: 'Your face and posture stayed composed on camera, which reads as authority in an auditorium.',
+    when: (s) => s.avgComposure >= 0.68,
+  },
+  {
+    id: 'finished_early_in_time',
+    priority: 8,
+    text: 'You wrapped before the countdown hit zero but still landed your material — that is valid for tight formats when you own the close.',
+    when: (s) =>
+      (s.durationMode === '30' || s.durationMode === '45') &&
+      s.finishedInTime === true &&
+      s.endedBy === 'user' &&
+      !s.anyEmpty,
+  },
+  {
+    id: 'finished_on_time',
+    priority: 9,
+    text: 'You finished inside the timed window with material on the record — great discipline for short formats.',
+    when: (s) =>
+      (s.durationMode === '30' || s.durationMode === '45') &&
+      s.finishedInTime === true &&
+      s.endedBy === 'timer' &&
+      !s.anyEmpty,
+  },
+  {
+    id: 'healthy_pace',
+    priority: 8,
+    text: 'Your pace sat in a listenable range — neither rushing the applause line nor dragging the pause.',
+    when: (s) => typeof s.avgWpm === 'number' && s.avgWpm >= 105 && s.avgWpm <= 175,
+  },
+  {
+    id: 'low_fillers',
+    priority: 7,
+    text: 'Filler words stayed in check — silence beats “um” when you need a beat to think.',
+    when: (s) => (s.fillerCount ?? 0) <= 2 && s.answeredTurnCount >= 1,
+  },
+  {
+    id: 'substantive_delivery',
+    priority: 7,
+    text: 'You spoke long enough to develop rhythm and emphasis, not just read the first sentence.',
+    when: (s) => s.avgAnswerWords >= 35,
+  },
+  {
+    id: 'completed_speech',
+    priority: 3,
+    text: 'You ran a full delivery pass — that repetition is what makes the teleprompter feel invisible.',
+    when: (s) => s.turnCount >= 1,
+  },
+]
+
+export const SPEAKING_IMPROVEMENT_CATALOG: FeedbackCatalogEntry[] = [
+  {
+    id: 'empty_delivery',
+    priority: 10,
+    text: 'No transcript was captured — check mic permissions and speak toward the camera before finishing.',
+    when: (s) => s.anyEmpty,
+  },
+  {
+    id: 'missed_time_budget',
+    priority: 10,
+    text: 'You did not finish within the timed window — practice the teleprompter chunk for that duration until it fits cleanly.',
+    when: (s) =>
+      (s.durationMode === '30' || s.durationMode === '45') && s.finishedInTime === false,
+  },
+  {
+    id: 'low_coverage',
+    priority: 9,
+    text: 'Large parts of the teleprompter never showed up in speech — keep eyes on the scroll and follow line by line.',
+    when: (s) =>
+      typeof s.teleprompterCoverage === 'number' &&
+      s.teleprompterCoverage < 0.45 &&
+      !s.anyEmpty,
+  },
+  {
+    id: 'composure_dip_speaking',
+    priority: 8,
+    text: 'Composure dipped on camera — plant your feet, exhale before each paragraph, and hold eye line to the lens.',
+    when: (s) => s.minComposure < 0.48,
+  },
+  {
+    id: 'fast_pace',
+    priority: 7,
+    text: 'Pace ran hot — add a half-beat after commas so the room can absorb the line.',
+    when: (s) => typeof s.avgWpm === 'number' && s.avgWpm > 185,
+  },
+  {
+    id: 'slow_pace',
+    priority: 7,
+    text: 'Pace dragged — tighten phrasing and keep momentum through the teleprompter beats.',
+    when: (s) => typeof s.avgWpm === 'number' && s.avgWpm > 0 && s.avgWpm < 95,
+  },
+  {
+    id: 'fillers_high',
+    priority: 6,
+    text: 'Fillers stacked up — replace “um” with a silent breath at the end of each teleprompter line.',
+    when: (s) => (s.fillerCount ?? 0) >= 5,
+  },
+  {
+    id: 'brief_delivery',
+    priority: 6,
+    text: 'The delivery was very short — read through more of the scroll before tapping finish.',
+    when: (s) => s.answeredTurnCount >= 1 && s.avgAnswerWords < 18,
+  },
+  {
+    id: 'speaking_next_step',
+    priority: 1,
+    text: 'Next run: pick one focus — coverage, pace, or composure — and rehearse the same speech once more.',
     when: (s) => s.turnCount >= 1,
   },
 ]
@@ -237,16 +383,34 @@ export function pickFromCatalog(
   return out
 }
 
-export function pickTranscriptStrengths(turns: SessionTurn[], cap = REPORT_FEEDBACK_CAP): string[] {
+export function pickTranscriptStrengths(
+  turns: SessionTurn[],
+  cap = REPORT_FEEDBACK_CAP,
+  options?: TranscriptFeedbackOptions,
+): string[] {
   if (turns.length === 0) {
     return ['Complete a full answer loop in the studio to collect feedback.']
   }
-  return pickFromCatalog(STRENGTH_CATALOG, analyzeTranscript(turns), cap)
+  const signals = analyzeTranscript(turns, options)
+  const catalog =
+    signals.scenarioId === 'speaking' || options?.scenarioId === 'speaking'
+      ? SPEAKING_STRENGTH_CATALOG
+      : STRENGTH_CATALOG
+  return pickFromCatalog(catalog, signals, cap)
 }
 
-export function pickTranscriptImprovements(turns: SessionTurn[], cap = REPORT_FEEDBACK_CAP): string[] {
+export function pickTranscriptImprovements(
+  turns: SessionTurn[],
+  cap = REPORT_FEEDBACK_CAP,
+  options?: TranscriptFeedbackOptions,
+): string[] {
   if (turns.length === 0) {
     return ['Finish more turns to unlock tailored improvement tips.']
   }
-  return pickFromCatalog(IMPROVEMENT_CATALOG, analyzeTranscript(turns), cap)
+  const signals = analyzeTranscript(turns, options)
+  const catalog =
+    signals.scenarioId === 'speaking' || options?.scenarioId === 'speaking'
+      ? SPEAKING_IMPROVEMENT_CATALOG
+      : IMPROVEMENT_CATALOG
+  return pickFromCatalog(catalog, signals, cap)
 }

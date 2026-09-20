@@ -10,6 +10,14 @@ export type RubricScores = {
   red_flags: string[]
   overall: number
   mock?: boolean
+  presence?: number
+  message_fit?: number
+  teleprompter_coverage?: number
+  timing?: {
+    mode?: string
+    finished_in_time?: boolean
+    notes?: string
+  }
 }
 
 export type DirectorDecision = {
@@ -42,6 +50,76 @@ export type SessionPersonaSettings = {
   scenario_id?: string
   character_id?: string
   session_duration_sec?: number
+  speech_id?: string
+  speech_title?: string
+  speaker?: string
+  duration_mode?: string
+  target_duration_sec?: number
+  teleprompter_lines?: string[]
+  teleprompter_prepared_at?: string
+  finished_in_time?: boolean
+  delivery_stats?: {
+    elapsed_sec?: number
+    ended_by?: string
+    summary?: SpeakingDeliverySummary
+  }
+}
+
+export type SpeechCatalogItem = {
+  id: string
+  slug: string
+  speaker: string
+  title: string
+  teaser: string
+  word_count: number
+  est_full_duration_sec: number
+}
+
+export type SpeechesCatalogResponse = {
+  speeches: SpeechCatalogItem[]
+}
+
+export type SpeakingPrepareResponse = {
+  speech_id: string
+  speech_title: string
+  speaker: string
+  duration_mode: string
+  target_sec: number
+  lines: string[]
+  estimated_sec?: number | null
+  rationale?: string | null
+  source?: string | null
+  teleprompter_prepared_at: string
+}
+
+export type SpeakingDeliverySample = {
+  ts_ms: number
+  composure: number
+  stress: number
+  engagement: number
+}
+
+export type SpeakingDeliverySummary = {
+  avg_composure?: number
+  min_composure?: number
+  max_stress?: number
+  avg_wpm?: number | null
+  filler_count?: number
+  presage_degraded?: boolean
+}
+
+export type SpeakingCompleteInput = {
+  transcript: string
+  elapsedSec: number
+  finishedInTime: boolean
+  endedBy: 'timer' | 'user' | 'early_exit'
+  samples: SpeakingDeliverySample[]
+  summary: SpeakingDeliverySummary | null
+}
+
+export type SpeakingCompleteResponse = {
+  ok: boolean
+  end_session: boolean
 }
 
 export type SessionReportPayload = {

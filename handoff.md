@@ -206,6 +206,20 @@ Checks: `GET /health`, `GET /debug/presage`, `npm run build` in `frontend/`.
 7. With keys: persona tone, ElevenLabs STT/TTS as expected.  
 8. Brand, character posters, expression PNGs return 200 (under `frontend/public/`).
 
+### Public Speaking QA matrix (Phase 8)
+
+| Case | Expected behavior |
+|------|-------------------|
+| No `GEMINI_API_KEY` | `mock_teleprompter` + Presage speaking report (`source: presage`, `mock: true`); full prep → live → results |
+| No mic / camera permission | Block **Start session** / **Start speech** with “Microphone and camera access are required to start.” (same as salary) |
+| Timer expires with silence | Auto-complete with empty transcript; report `red_flags` includes `empty_delivery` |
+| User taps **Finish speech** before timer | `finished_in_time: true` when transcript non-empty; timing notes mention early stop |
+| **End session early** | `ended_by: early_exit`, `finished_in_time: false`, `missed_time_budget` on timed modes |
+| Refresh on `/start/live` mid-speech | v1 **restart delivery** (no timer resume): teleprompter restored via `GET /sessions/{id}` settings; user taps **Start speech** again |
+| Camera off during delivery | Wobble mock samples still drive auditorium reactions; Presage pane shows **degraded · camera off**; report notes degraded heuristics when flagged |
+
+Automated checks: `cd backend && python -m pytest test_speaking_qa.py -q`.
+
 ---
 
 ## Git / secrets

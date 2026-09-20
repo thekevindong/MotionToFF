@@ -1,453 +1,521 @@
-# SpeakUp — Studio UX & conversation plan
+# SpeakUp — Public Speaking mode (implementation plan)
 
-**Goal:** Fix interview-stage polish, restore a dedicated prep flow before the live call, and evolve turn-taking from explicit “Stop & submit” into natural back-and-forth — including optional Presage-driven interviewer reactions.
+**Goal:** Ship **Public Speaking** as a self-contained practice mode: pick a famous speech, pick a time budget, get a Gemini-curated teleprompter, deliver on an auditorium stage while **audience visuals react only to Presage/face delivery signals** (no spoken audience interaction), then receive an end-of-session **Gemini evaluation** that combines transcript, timing, and delivery telemetry for the Results report.
+
+**Deferred:** Thesis Defense (separate plan after speaking ships).
 
 **Runtime truth:** [handoff.md](handoff.md)  
-**Presage / sidecar:** [docs/presage-step5.md](docs/presage-step5.md)
+**Presage / face pipeline:** `use-face-composure.ts` → `use-composure-sampler.ts` (same “Pegasus/Presage” path the salary studio already uses)
 
-**Primary surfaces today**
+---
 
-| Area | Location |
-|------|----------|
-| Live studio (interview UI) | `frontend/src/pages/Setup.tsx`, `Setup.css` |
-| Turn + voice | `frontend/src/hooks/use-interview-machine.ts`, `voice/stt.ts` |
-| Interviewer expressions | `frontend/src/hooks/use-character-expression.ts` |
-| Presage pane data | `frontend/src/hooks/use-presage-metrics.ts`, `use-composure-sampler.ts`, `use-face-composure.ts` |
-| Backend turn loop | `backend/main.py` (`POST /sessions/{id}/turn`), `interviewer.py`, `director.py`, `composure.py` |
+## Product summary
 
-**Reference UI (prep wizard):** commit `c45be82` had a three-step flow (`mode` → `character` → `launch`) with `.stepper`, `.mode-grid`, `.launch-*` in `Setup.tsx` / `Setup.css`. Reuse that interaction pattern with the **current** light studio visual language (paper/night tokens, typography), not a pixel-perfect revert.
+| User choice | Behavior |
+|-------------|----------|
+| **Speech** | One of **3 seeded speeches** (3 different historical speakers; excerpts sourced from [HighSpark famous persuasive speeches](https://highspark.co/blogs/famous-persuasive-speeches)) |
+| **Duration** | **30s**, **45s**, or **Full length** (count-up; user taps **Finish speech** when done) |
+| **Stage** | Auditorium backgrounds only — no recruiter/manager/HR opponent sprite |
+| **Teleprompter** | Gemini selects the best lines from the full speech text to fit the chosen duration (or full speech for unlimited) |
+| **Delivery** | User speaks until countdown hits zero (timed modes) or until **Finish speech** (full length) |
+| **Audience** | Visual reactions driven by **facial/expression metrics**; no `/interject`, no Nemotron director, no Q&A |
+| **Report** | Gemini scores delivery + content fit; includes whether they finished in time and how well they covered the teleprompter |
 
 ---
 
 ## Success criteria (demo-ready)
 
-1. Self-view webcam defaults to **top-right** of the stage (still draggable/resizable).
-2. Interviewer captions are **readable width** (not full-bleed over the character).
-3. **Two-line caption stack:** AI line + user line with slide/fade animation; user text updates live while they speak.
-4. Presage pane shows **all metrics** the product promises (face-derived + speech + vitals when available), with honest “unavailable” states — not silent omission.
-5. Opponent sprite shows **full head + top margin**; scaling is **height-only** (`object-fit: contain` / max-height), independent of stage width.
-6. Talking mouth animation starts only when **audio is actually playing** (ElevenLabs `HTMLAudioElement` or `speechSynthesis` start).
-7. **Continuous conversation:** user can talk without pressing Stop; end-of-turn is detected by silence; user can **barge in** while the AI speaks.
-8. **Prep screen** between Home “Get started” and the live black stage: scenario, opponent, and context — header dropdowns removed or disabled until prep is complete.
-9. **Presage reactions:** when stress / composure crosses thresholds, the interviewer can interject (short, in-character) without breaking the session.
+1. **Prep:** Public Speaking is **unlocked** on Home/Prep; user can complete prep without picking a salary “opponent.”
+2. **Catalog:** `GET /speeches` returns exactly **3** speeches with speaker, title, teaser, and estimated full-read duration.
+3. **Teleprompter:** After speech + duration are chosen, backend returns **teleprompter lines** within ~5s (Gemini) or deterministic excerpt fallback without a key.
+4. **Live studio:** Single delivery segment — teleprompter visible, timer behaves per mode, STT shows live user caption, Presage pane still works.
+5. **Auditorium:** Background transitions **empty → full house → (optional reaction plate) → full house** with debounced face-driven reactions.
+6. **No dialogue loop:** Zero interviewer TTS, zero `POST /turn` multi-turn loop, zero `useComposureReactions` / `POST /interject` for speaking sessions.
+7. **Report:** `/sessions/{id}/report` includes a **speaking-specific rubric** (`source: gemini` when keyed) referencing transcript, teleprompter coverage, timing flags, and aggregated delivery stats.
+8. **Zero-key demo:** Full flow completes with mock teleprompter + Presage-heuristic report (same pattern as salary mock interviewer).
 
 ---
 
-## Phase 1 — Quick UI fixes (1–2 days)
+## Canonical speech seed (v1)
 
-### 1.1 Camera tile → top-right
+Store **full excerpt text** in SQLite (not fetched at runtime). Attribute source URL in metadata. Suggested three speakers from the HighSpark list (distinct people, strong teleprompter rhythm):
 
-**Problem:** `.camtile` is `position: fixed; left: 28px; bottom: 88px` (`Setup.css` ~658–661). Reads as bottom-left over the footer.
+| `slug` | Speaker | Title (display) | HighSpark section |
+|--------|---------|-------------------|-------------------|
+| `mlk-dream` | Martin Luther King Jr. | I Have a Dream (excerpt) | §1 |
+| `elizabeth-tilbury` | Queen Elizabeth I | Speech to the Troops at Tilbury (excerpt) | §2 |
+| `sojourner-truth` | Sojourner Truth | Ain’t I a Woman? (excerpt) | §4 |
 
-**Implementation**
-
-1. Change default anchor to **top-right inside the stage** (preferred) or top-right viewport with stage-aware inset:
-   - Option A (recommended): `position: absolute` on `.camtile` within `.stage` so the tile scrolls with the stage and respects `overflow: hidden` clipping policy — if clipping is undesirable, use `overflow: visible` on `.stage` only for the tile layer.
-   - Default CSS: `top: 16px; right: 16px; left: auto; bottom: auto`.
-2. Update `CameraTile` in `Setup.tsx`:
-   - On first mount, if `pos === null`, do not rely on bottom-left CSS; optional `useLayoutEffect` to set initial `pos` from `getBoundingClientRect()` of `.stage` (top-right inset).
-   - Persist last position in `sessionStorage` key `speakup_camtile_pos` (optional, nice for repeat visits).
-3. Update responsive rules at bottom of `Setup.css` (media query ~875) so mobile keeps min touch target and does not cover Presage toggle.
-
-**Acceptance:** Fresh load places “You” tile top-right; drag still works; resize unchanged.
+**Licensing note:** Excerpts are for **educational practice** inside the hackathon demo; keep `source_url` on each row. Do not hotlink or scrape at runtime — one-time seed only.
 
 ---
 
-### 1.2 Caption layout (interviewer + user stack)
+## Architecture overview
 
-**Problem:** `.stage-caption` uses `inset: auto 16px 72px` with no `max-width`, so long questions span nearly the full stage (`Setup.css` ~463–475).
-
-**Implementation**
-
-1. Add `frontend/src/components/StageCaptionStack.tsx` (or colocated in `Setup.tsx` if you want zero new files — component is still recommended for animation state).
-2. Structure:
-   ```text
-   .caption-stack (absolute, bottom: 72px, left: 50%, transform: translateX(-50%))
-     .caption-line.caption-line--ai
-     .caption-line.caption-line--user
-   ```
-3. CSS constraints:
-   - `max-width: min(42rem, calc(100% - 32px))` (tune in QA).
-   - `text-align: left` for readability; optional `text-wrap: balance` where supported.
-   - Do **not** cover the opponent tag pill at bottom center; keep `bottom` offset ≥ height of `.opponent-tag`.
-4. **AI caption:** bind to `currentQuestion` while `state === 'ASKING'` or hold last interviewer line until user speaks (product choice: **hold AI line until user caption appears**).
-5. **User caption:** bind to `browserSpeech.getTranscript()` (already wired in `Setup.tsx`) whenever `sessionLive && micOn`, not only after submit.
-
-**Acceptance:** Long Gemini strings wrap in a centered card; stage character remains visible; no overlap with camera tile (adjust `right` padding on stack when cam tile is on the right — e.g. `max-width` + `margin-right` when tile intersects).
-
----
-
-### 1.3 Caption animations (user slides up, AI fades out)
-
-**Implementation**
-
-1. Track `captionGeneration` ref incremented on each AI question change and each finalized user utterance.
-2. CSS keyframes (prefer CSS over JS):
-   - **Enter (user):** `translateY(12px) → 0`, `opacity: 0 → 1`, ~280ms ease-out.
-   - **Exit (previous AI):** `translateY(0) → -8px`, `opacity: 1 → 0`, ~320ms; run when user line becomes non-empty or on `speech-start` from VAD (Phase 3).
-3. Use `prefers-reduced-motion: reduce` → cross-fade only, no translation.
-4. `aria-live="polite"` on the stack container; avoid announcing every partial STT token — announce on phrase boundaries (debounce 800ms) or on end-of-turn only.
-
-**Acceptance:** Visually matches “previous slides up and fades; new slides in from below” in user testing.
-
----
-
-### 1.4 Opponent sprite scale (height-only, full head visible)
-
-**Problem:** `.opponent-video` is `width/height: 100%; object-fit: cover` (`Setup.css` ~385–389), which crops the head on tall expression PNGs.
-
-**Implementation**
-
-1. Replace cover with **contain** on height:
-   ```css
-   .opponent-video {
-     width: auto;
-     height: min(78vh, 100%);
-     max-height: calc(100% - 48px); /* top breathing room */
-     margin: 24px auto 0;
-     object-fit: contain;
-     object-position: top center;
-   }
-   ```
-2. Keep `.opponent` as positioning context; center horizontally with flex on a wrapper `.opponent-frame` if needed.
-3. **Do not** tie sprite width to stage width — only `max-height` and `object-position: top center`.
-4. QA all three characters × talking frames (`public/images/{recruiter,manager,hr}/`).
-
-**Acceptance:** Top of hair/head always visible with ≥24px padding; feet may letterbox — that is OK.
-
----
-
-### 1.5 Sync talking animation to audible TTS
-
-**Problem:** `useCharacterExpression` alternates frames 1↔2 whenever `turnState === 'ASKING'` (`use-character-expression.ts` ~92–101), but `useInterviewMachine.ask()` sets `ASKING` **before** `audio.play()` resolves (`use-interview-machine.ts` ~123–131).
-
-**Implementation**
-
-1. Extend `useInterviewMachine.speak()`:
-   - Add optional callbacks: `onAudibleStart?: () => void` (fire on `audio.onplaying` or first `speechSynthesis` `onstart`).
-   - Keep `ASKING` for “interviewer turn” but add **`isSpeakingAudible: boolean`** state, or split into `ASKING_LOADING` | `ASKING_SPEAKING`.
-2. Prefer minimal API:
-   - `return { state, speakingPhase: 'idle' | 'loading' | 'audible' }` derived inside the hook.
-3. Update `useCharacterExpression` to animate mouth only when `speakingPhase === 'audible'` (or `ASKING_SPEAKING`).
-4. Optional: show a subtle “…” caption or neutral face during `loading` (no mouth flap).
-
-**Acceptance:** No mouth movement during TTS network latency; movement starts in sync with heard audio within one animation frame.
-
----
-
-### 1.6 Presage pane — restore full metric set
-
-**Problem:** `usePresageMetrics` exposes five rows (Composure, Eye contact, Vocal steadiness, Pace, Filler words) but `ComposureSample.signals.vitals` is always `null` in `use-composure-sampler.ts`, and `FaceMetrics.raw` (blinks, look-away, instability) is never surfaced.
-
-**Target rows (show row with “—” if unavailable)**
-
-| Label | Source (priority order) |
-|-------|-------------------------|
-| Composure | Backend turn snapshot when `ASKING`; else live `sample.composure` |
-| Heart rate | Sidecar `pulse` / `hr_bpm`; else `signals.vitals.hr_bpm` |
-| Breathing rate | Sidecar `breathing` field (when sidecar exists) |
-| Eye contact | `signals.engagement` |
-| Expression stress | `signals.expression.stress` (rename “Vocal steadiness” if it was a proxy) |
-| Head stability | `FaceMetrics.raw.instability` inverted |
-| Gaze / look-away | `FaceMetrics.raw.lookAway` |
-| Blink rate | `FaceMetrics.raw.blinksPerMin` |
-| Pace (WPM) | existing speech hook |
-| Filler words | existing speech hook |
-| Signal source | Footer chip: `MediaPipe` / `Sidecar` / `Speech fallback` |
-
-**Implementation**
-
-1. **Frontend plumbing**
-   - Extend `useComposureSampler` / `readPresage()` to pass through `getMetrics()?.raw` into `signals` (add optional fields to `ComposureSignals` in `contracts.ts` — keep backward compatible).
-   - Add `usePresageVitals.ts` polling `GET ${VITE_API_URL}/debug/presage` every 2s while stats pane open **or** new lightweight `GET /sessions/{id}/vitals` (preferred for production; see Phase 4).
-2. **Map sidecar JSON** using fields already assumed in `backend/composure.py` (`pulse`, `breathing`, `expression`, `confidence`, `talking`). Parse `composure_seam_status().sidecar_latest` shape into UI rows when `sidecar_reachable`.
-3. Update `PresagePane` list rendering if row count exceeds viewport — `max-height` + `overflow-y: auto` on `.presage-list`.
-4. Update `presageStatus` string in `Setup.tsx` to mention sidecar vs MediaPipe explicitly.
-
-**Acceptance:** With only MediaPipe, user sees face + speech metrics. With sidecar on `:8100`, heart rate and breathing appear within 2s. No row silently disappears.
-
----
-
-## Phase 2 — Prep screen before live call (1 day)
-
-### 2.1 Flow
-
-```text
-Home “Get started” → /start (prep) → user completes steps → /start/call or in-page `studioPhase: 'live'`
+```mermaid
+flowchart LR
+  subgraph prep [Prep UI]
+    M[Mode: speaking]
+    S[Pick speech]
+    D[Pick duration]
+    L[Launch studio]
+  end
+  subgraph api [FastAPI]
+    GS[GET /speeches]
+    GP[POST .../speaking/prepare]
+    GC[POST .../speaking/complete]
+    GR[GET .../report]
+  end
+  subgraph live [Studio live]
+    TP[Teleprompter panel]
+    CAM[Webcam + FaceMetrics]
+    AUD[Auditorium backdrop FSM]
+    STT[Browser STT]
+  end
+  subgraph eval [End report]
+    GJ[Gemini speaking judge]
+    FB[Presage fallback rubric]
+  end
+  M --> S --> D --> L
+  L --> GP
+  GP --> TP
+  CAM --> AUD
+  STT --> GC
+  GC --> GR
+  GR --> GJ
+  GJ --> FB
 ```
 
-**Do not** start `getUserMedia`, `POST /sessions`, or the turn machine until prep is done.
+**Session model:** One speaking session = **one logical “turn”** in `turns` for compatibility with existing Results plumbing:
 
-### 2.2 Step model (from `c45be82`, updated)
+- `question` field → teleprompter text (joined lines or JSON string — pick one and document in `settings_json`)
+- `answer` field → final STT transcript
+- `composure` → session-aggregate from client payload or backend `sample_composure(answer)`
+- `settings_json` holds `scenario_id: "speaking"`, `speech_id`, `duration_mode`, `teleprompter_lines`, `delivery_stats`, `finished_in_time`, etc.
 
-| Step | ID | Content |
-|------|-----|---------|
-| 1 | `scenario` | `MODES` grid (locked modes disabled) |
-| 2 | `opponent` | `SALARY_CHARACTERS` cards with poster + tone |
-| 3 | `context` | Job title + document upload (move **Add context** drawer here as inline panel) |
-| 4 | `ready` | Summary card: scenario, opponent, files count → **Enter studio** |
-
-Reuse CSS class names from old commit where possible: `.stepper`, `.mode-grid`, `.mode-card`, `.launch-*` → rename launch to `.prep-enter` to avoid implying auto-connect.
-
-### 2.3 Studio header after prep
-
-- While `studioPhase === 'prep'`: hide black stage / footer controls; show wizard full-page in SpeakUp chrome.
-- While `studioPhase === 'live'`: hide scenario/opponent dropdowns from `studio-top` (read-only summary chip: “Salary · HR Lead”); **Back** ends session with confirm dialog.
-- `App.tsx`: optional path `/start` vs `/start/live` — if staying single route, use `sessionStorage` `speakup_prep_complete` + query `?live=1` for bookmarking.
-
-### 2.4 Migration from current `Setup.tsx`
-
-1. Extract `StudioPrep.tsx` + `StudioLive.tsx` from `Setup.tsx` to keep file size manageable.
-2. Move `MODES` / `SALARY_CHARACTERS` to `frontend/src/config/modes.ts` (already partially there).
-3. `startSession()` only called from prep step **Enter studio** (not from overlay on stage).
-
-**Acceptance:** Clicking Get started never shows the black stage until scenario + opponent (+ context acknowledged) are chosen; matches old wizard UX with current design tokens.
+Salary / interview paths stay on `_execute_turn` + `interviewer.py`; speaking bypasses that loop.
 
 ---
 
-## Phase 3 — Continuous conversation (2–4 days)
+## Phase 0 — Assets & config (0.5 day)
 
-### 3.1 Product behavior
+### 0.1 Auditorium images
 
-| Situation | Behavior |
-|-----------|----------|
-| AI speaking | User can **barge in** — duck/stop TTS, switch to listening |
-| User speaking | Show live user caption; do not call `/turn` yet |
-| User silent ≥ hangover | Finalize utterance → `THINKING` → STT → `/turn` → AI responds |
-| User never spoke | Do not submit empty turns (`TurnRequest` min_length=1) — stay in listen |
-| AI thinking | Mic can stay open but ignore VAD for turn submit (or mute graph) |
-| Manual fallback | Keep a small “Send now” text button in footer for noisy rooms / accessibility |
+Expected under `frontend/public/backgrounds/auditorium/` (add files if missing; `stage-backgrounds.ts` already references two):
 
-### 3.2 State machine changes
+| File | Use |
+|------|-----|
+| `aud_empty.png` | Prep / before speech locked |
+| `aud_filled.png` | Default “full house” during delivery |
+| `aud_react_engaged.png` | High engagement + low stress (optional separate art or CSS tint overlay) |
+| `aud_react_tense.png` | High stress / low composure |
+| `aud_react_warm.png` | Strong composure + steady eye line |
 
-Extend `TurnState` in `contracts.ts`:
+If only two PNGs exist initially, ship v1 with **crossfade + subtle CSS grade** on `aud_filled` for reactions; add dedicated reaction plates when art is ready.
 
-```text
-IDLE → ASKING → LISTENING ⇄ THINKING → ASKING → … → REPORT
-         ↑          |
-         └─ INTERRUPTED (optional explicit state) or LISTENING with cancelToken on TTS
-```
+### 0.2 Frontend config
 
-Implement in `use-interview-machine.ts`:
-
-- `stopSpeaking()` on barge-in (already exists).
-- `finalizeUserTurn(): void` — stop recorder, flush STT, transition to `THINKING`.
-- `armListenMode(): void` — called when AI finishes or barge-in completes.
-
-### 3.3 End-of-utterance detection (recommended architecture)
-
-**Tier 1 — Ship first (no new deps)**
-
-- `AnalyserNode` RMS on mic track from existing `MediaStream`.
-- Parameters (tune in `frontend/src/voice/vad-config.ts`):
-  - `speakThresholdDb`: ~−45 dBFS (calibrate noise floor for 300ms on listen start).
-  - `silenceHangoverMs`: **900–1200** (negotiation pacing; user may pause to think).
-  - `minSpeechMs`: **400** (ignore coughs).
-  - `maxUtteranceMs`: **120000** (force finalize).
-- Pre-speech ring buffer **300ms** when starting MediaRecorder segment (concatenate chunks) to avoid clipped first syllable.
-
-**Tier 2 — Optional upgrade**
-
-- `@ricky0123/vad-web` (Silero in WASM) in a Web Worker for noisy environments — same `speech-end` → `finalizeUserTurn` contract.
-
-**References:** hysteresis + hangover patterns (Silero VAD configs: `minSilenceDurationMs`, `speechPadMs`); RMS kit patterns (`silenceDetectionDelayMs`).
-
-### 3.4 STT strategy during continuous mode
-
-| `serverSttAvailable` | Behavior |
-|---------------------|----------|
-| `true` | MediaRecorder collects segment between `speech-start` and `speech-end`; POST blob to `/api/stt` on finalize |
-| `false` | Keep `useBrowserSpeechCapture` running; on finalize, `stop()` + `getTranscript()` (current path) |
-
-Partial transcripts drive **user caption only**; `/turn` uses finalized text once.
-
-### 3.5 Barge-in
-
-1. While `speakingPhase === 'audible'`, run lightweight VAD on mic.
-2. If speech detected for ≥ `bargeInMinMs` (200–300ms):
-   - `stopSpeaking()` + increment speak token.
-   - `listen()` / `armListenMode()`.
-   - Set character expression to listening frame (`useCharacterExpression` already handles `LISTENING`).
-3. Ducking: optional `audio.volume = 0.2` for 150ms before stop — polish only.
-
-### 3.6 UI changes
-
-- Remove primary **Stop & submit** (`Setup.tsx` ~1754) or demote to secondary “Send now”.
-- Footer mic stays toggle; state pill text: “Listening…” / “Interviewer speaking” / “Processing…”.
-- Disable scenario dropdowns during live session (already partially done).
-
-### 3.7 Backend
-
-No schema change required for basic continuous mode if finalized text still posts to `POST /turn`.
-
-Optional: accept `answer: ""` with `meta.skip: true` — **avoid** unless needed; prefer frontend gate.
-
-**Acceptance:** User completes a full exchange without clicking Stop; barge-in stops AI mid-sentence; silence triggers next question; empty silence does not 400 the API.
+- `frontend/src/config/modes.ts` — set `speaking.ready: true`
+- `frontend/src/config/stage-backgrounds.ts` — replace static speaking URL with **`audienceStageUrl(phase, reaction)`** (new module or extend this file)
+- `frontend/src/config/speaking-duration.ts` — **new**: `{ id: '30' | '45' | 'full', seconds: 30 | 45 | 0 }`
 
 ---
 
-## Phase 4 — Presage-driven interviewer reactions (2–3 days)
+## Phase 1 — SQLite speech catalog (0.5 day)
 
-### 4.1 Goals
+### 1.1 Schema (`backend/repository.py`)
 
-When live signals show elevated stress, anger proxy, or collapsing composure, the interviewer may **interject** briefly (“Let’s take a breath”, “I notice this is tense — walk me through your reasoning”) without advancing the main rubric turn.
+Add migration in `init_db()`:
 
-### 4.2 Signal sources
-
-| Source | When | Fields |
-|--------|------|--------|
-| MediaPipe | Always in browser | `stress`, `engagement`, `raw.exprStress` |
-| Sidecar | When `:8100` reachable | `pulse`, `expression`, `confidence` |
-| Turn composure | After each answer | `decision.input_snapshot.composure` |
-
-Define thresholds in `frontend/src/config/composure-thresholds.ts` (and mirror constants server-side):
-
-```ts
-export const INTERJECT = {
-  stressHigh: 0.72,        // sustained 3s
-  composureLow: 0.38,      // sustained 3s
-  hrElevated: 100,         // sidecar pulse
-  cooldownMs: 45000,       // per session
-  maxInterjectsPerSession: 4,
-}
+```sql
+CREATE TABLE IF NOT EXISTS speeches (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,
+  speaker TEXT NOT NULL,
+  title TEXT NOT NULL,
+  excerpt_text TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  word_count INTEGER NOT NULL,
+  est_full_duration_sec INTEGER NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
 ```
 
-Use **sustained** breach (≥3s at 1Hz sampler) to avoid flicker.
+### 1.2 Seed script
 
-### 4.3 API design
+- **New:** `backend/seed_speeches.py` (idempotent `INSERT OR REPLACE` by `slug`)
+- **New:** `backend/data/speeches/*.txt` or inline constants in seed file for the three excerpts
+- Run once on deploy / document in README: `python -m seed_speeches` from `backend/`
 
-**New endpoint** (recommended):
+### 1.3 Repository helpers
 
-`POST /sessions/{session_id}/interject`
+- `list_speeches() -> list[dict]`
+- `get_speech(speech_id: str) -> dict | None`
 
-Request:
+### 1.4 API
+
+- `GET /speeches` — public catalog (no auth); returns `{ speeches: [{ id, slug, speaker, title, teaser, word_count, est_full_duration_sec }] }`  
+  - `teaser` = first ~160 chars of excerpt (server-side), not full text (full text only after selection + session bind)
+
+**Acceptance:** Fresh DB → seed → `GET /speeches` returns 3 rows.
+
+---
+
+## Phase 2 — Gemini teleprompter (`backend/speaking.py`) (1 day)
+
+### 2.1 Module responsibilities
+
+**New file:** `backend/speaking.py`
+
+| Function | Purpose |
+|----------|---------|
+| `build_teleprompter(speech, duration_mode)` | Returns `{ lines: string[], target_sec, notes? }` |
+| `mock_teleprompter(speech, duration_mode)` | Word-budget heuristic (~2.5 wps) when no `GEMINI_API_KEY` |
+| `gemini_teleprompter(...)` | Structured JSON output |
+
+**Gemini system prompt (sketch):**
+
+- Input: full `excerpt_text`, `duration_mode`, `target_sec` (30/45/null for full)
+- Output JSON only: `{ "lines": ["...", "..."], "estimated_sec": number, "rationale": "short" }`
+- Rules: preserve speaker voice; prefer iconic lines for short modes; for `full`, lines may be the entire excerpt split into ~1–2 sentence chunks; no commentary to the user
+
+**Duration budgets:**
+
+| Mode | `target_sec` | Line budget guidance |
+|------|--------------|----------------------|
+| 30s | 30 | ~75 words total |
+| 45s | 45 | ~110 words total |
+| full | `est_full_duration_sec` | All excerpt, chunked for scroll |
+
+### 2.2 Prepare endpoint
+
+`POST /sessions/{session_id}/speaking/prepare`
+
+Body: `{ "speech_id": "...", "duration_mode": "30" | "45" | "full" }`
+
+Steps:
+
+1. Validate session exists and `settings.scenario_id === "speaking"` (or set scenario on create — see Phase 3).
+2. Load speech row; call `build_teleprompter`.
+3. Persist in `settings_json`:
+   - `speech_id`, `speech_title`, `speaker`
+   - `duration_mode`, `target_duration_sec`
+   - `teleprompter_lines` (array)
+   - `teleprompter_prepared_at`
+4. Return teleprompter payload to client (lines + metadata).
+
+Wire in `main.py`; add Pydantic models next to existing session bodies.
+
+**Acceptance:** With Gemini key, 30s mode returns ≤~90 words across lines; without key, mock returns stable deterministic slice.
+
+---
+
+## Phase 3 — Prep wizard for speaking (1 day)
+
+### 3.1 Stepper changes (`StudioPrep.tsx`)
+
+When `modeId === 'speaking'`:
+
+| Step | Replace |
+|------|---------|
+| Scenario | unchanged (speaking card enabled) |
+| Opponent | **Pick a speech** — grid from `GET /speeches` |
+| Context | **Pick duration** — 30s / 45s / Full length (not salary session length 3–15 min) |
+| Ready | Summary: speech title, speaker, duration; **no document upload required** (hide or collapse ContextPanel) |
+
+### 3.2 Session create (`Setup.tsx` → `createSession`)
+
+For speaking:
+
+- `scenarioId: 'speaking'`
+- `characterId` — send **`null`** or a sentinel `'audience'` (extend `ALLOWED_CHARACTER_IDS` or make character optional when `scenario_id === speaking`)
+- `sessionDurationSec` — map speaking duration: `30`, `45`, or `0` for full (count-up; existing timer UI already supports `sessionDurationSec === 0` → elapsed only)
+- `jobTitle` e.g. `Public speaking — {speech title}`
+
+### 3.3 Enter studio sequence
+
+After `POST /sessions` + uploads skipped:
+
+1. `POST .../speaking/prepare` with chosen `speech_id` + `duration_mode`
+2. Navigate to live stage with teleprompter state in React (and persisted in settings for refresh safety)
+
+**Acceptance:** Prep never asks for recruiter/manager/HR when mode is speaking.
+
+---
+
+## Phase 4 — Live studio: delivery-only UX (1.5–2 days)
+
+### 4.1 Branch in `Setup.tsx`
+
+Detect `mode.id === 'speaking'` and use a **slim controller** (recommended: extract `use-speaking-session.ts` + `SpeakingLive.tsx` rather than growing `use-interview-machine`):
+
+| Salary (today) | Speaking (new) |
+|----------------|----------------|
+| `useInterviewMachine` ASKING/LISTENING loop | States: `READY` → `DELIVERING` → `SUBMITTING` → `DONE` |
+| Opponent sprite + TTS | No opponent; auditorium + teleprompter |
+| `postTurn` per answer | Single `postSpeakingComplete` |
+| `useComposureReactions` | **Off** |
+| AI caption stack | Teleprompter + user STT line |
+
+### 4.2 Teleprompter UI (`SpeakingTeleprompter.tsx`)
+
+- Scrollable column stage-left or lower-third (match studio typography)
+- Highlight **active line** by elapsed time heuristic (optional v1: static list; v1.1: auto-scroll by WPM estimate)
+- Show speech title + speaker in `studio-summary-chip`
+
+### 4.3 Controls (`StudioLive.tsx` props)
+
+Speaking-specific footer:
+
+- **Mic** toggle (default on at start)
+- **Finish speech** (primary) — always visible in full mode; in timed modes also auto-submit at `0:00`
+- **End & get report** — same as today after completion or early exit with confirm
+- Remove **Submit answer** / barge-in affordances when speaking
+
+### 4.4 Timer behavior
+
+Reuse `seconds` + `sessionDurationSec`:
+
+- Timed: countdown `sessionDurationSec - seconds`; at zero → stop STT → call complete endpoint
+- Full: count-up only; user must tap **Finish speech**
+
+Track flags client-side for report:
+
+- `started_at`, `ended_at`, `ended_by: 'timer' | 'user' | 'early_exit'`
+- `finished_in_time` (timed modes: transcript non-empty and ended_by !== early_exit before timer)
+
+### 4.5 Delivery telemetry batch
+
+While `DELIVERING`, reuse:
+
+- `useFaceComposure` + `useComposureSampler` (1 Hz samples)
+- `usePresageMetrics` for WPM / fillers
+
+On complete, POST aggregated stats (do not spam server during delivery):
 
 ```json
 {
-  "trigger": "high_stress",
-  "snapshot": {
-    "composure": 0.41,
-    "stress": 0.78,
-    "hr_bpm": 104,
-    "source": "mediapipe"
+  "transcript": "...",
+  "elapsed_sec": 42,
+  "finished_in_time": true,
+  "samples": [
+    { "ts_ms": 0, "composure": 0.71, "stress": 0.22, "engagement": 0.68 }
+  ],
+  "summary": {
+    "avg_composure": 0.68,
+    "min_composure": 0.41,
+    "max_stress": 0.55,
+    "avg_wpm": 128,
+    "filler_count": 3
   }
 }
 ```
 
-Response:
+Cap samples (e.g. last 120 points or 1/min) to keep payload small.
+
+---
+
+## Phase 5 — Auditorium reaction FSM (1 day)
+
+### 5.1 Hook: `use-audience-reaction.ts`
+
+**Inputs:** `ComposureSample | null`, `sessionPhase: 'empty' | 'house' | 'reacting'`, `enabled: boolean`
+
+**Outputs:** `{ backdrop: string, reaction: null | 'engaged' | 'tense' | 'warm' }`
+
+**State machine:**
+
+```text
+empty          — prep, before prepare() returns
+house          — default during DELIVERING
+reacting       — brief overlay when thresholds crossed
+```
+
+**Transitions:**
+
+1. `empty → house` when teleprompter is ready and user taps **Start** (or auto on enter live after prepare).
+2. `house → reacting` when (examples — tune in `speaking-audience-thresholds.ts`):
+   - `stress >= 0.62` for 2 consecutive samples → `tense`
+   - `composure >= 0.78` && `engagement >= 0.7` → `warm`
+   - `engagement >= 0.75` && `stress < 0.4` → `engaged`
+3. `reacting → house` after **2.5s** hold (min 4s between reactions to avoid flicker).
+
+Map to URLs via `audienceStageUrl(phase, reaction)`:
+
+- `empty` → `aud_empty.png`
+- `house` → `aud_filled.png`
+- `reacting` + kind → reaction asset or filtered `aud_filled`
+
+### 5.2 Stage rendering (`StudioLive.tsx`)
+
+- Hide `opponentImg` when `mode.id === 'speaking'`
+- Bind `stageBackgroundSrc` to FSM output (not static `stageBackgroundUrl('speaking', ...)`)
+
+### 5.3 No audience dialogue
+
+- Do **not** call `postInterject`
+- Do **not** show interjection captions
+- Optional subtle SFX later — out of scope for v1
+
+**Acceptance:** Stressful face → brief tense auditorium → returns to full house without any spoken feedback.
+
+---
+
+## Phase 6 — Complete + persist (`POST .../speaking/complete`) (1 day)
+
+### 6.1 Endpoint
+
+`POST /sessions/{session_id}/speaking/complete`
+
+Body: transcript + telemetry + timing flags from Phase 4.5.
+
+Server:
+
+1. Load settings (`teleprompter_lines`, `duration_mode`, `target_duration_sec`, speech metadata).
+2. `composure = aggregate from summary or sample_composure(transcript)`.
+3. Append **one** turn via `append_turn`:
+   - `question`: JSON or newline-joined teleprompter (consistent with judge prompt)
+   - `answer`: transcript
+   - `scores`: `pending_turn_scores(composure)` until report built
+   - `decision`: `{ "action": "speaking_complete", "rationale": "..." }` (static mock director)
+   - `next_question`: `{ "text": "", "end_session": true }`
+4. Merge `delivery_stats`, `finished_in_time`, `duration_mode` into `settings_json`.
+5. Clear `SETTINGS_SESSION_REPORT_KEY` to force rebuild on `/report`.
+6. Return `{ ok: true, end_session: true }`.
+
+### 6.2 Auto-close flow
+
+Mirror salary `endSession`: call `postSpeakingComplete` then `postSessionClose` then navigate `/results`.
+
+---
+
+## Phase 7 — Gemini end evaluation (1–1.5 days)
+
+### 7.1 `score_speaking_session(session_id)` in `backend/speaking.py` or `judge.py`
+
+Invoke from `score_session()` when `settings.scenario_id == 'speaking'`:
+
+**Gemini judge system prompt (speaking-specific rubric):**
+
+Return JSON only:
 
 ```json
 {
-  "text": "Short in-character interjection.",
-  "resume": true
+  "structure": 0.0-1.0,
+  "specificity": 0.0-1.0,
+  "confidence": 0.0-1.0,
+  "presence": 0.0-1.0,
+  "message_fit": 0.0-1.0,
+  "overall": 0.0-1.0,
+  "evidence": ["...", "..."],
+  "red_flags": ["..."],
+  "timing": {
+    "mode": "30|45|full",
+    "finished_in_time": true,
+    "notes": "..."
+  },
+  "teleprompter_coverage": 0.0-1.0
 }
 ```
 
-Implementation:
+**Inputs to model:**
 
-1. `interviewer.py`: `generate_interjection(session_id, trigger, snapshot)` — Gemini when keyed; mock lines when not.
-2. `main.py`: rate-limit per session in SQLite (`interject_count`, `last_interject_at` in settings_json or new columns).
-3. **Does not** append a full turn to history unless you want it in report — decision:
-   - **Option A (simpler):** interjections are audio-only overlays, not stored.
-   - **Option B (richer report):** store as `turn_type: "interjection"` in repository — more work.
+- Teleprompter lines + full transcript
+- `delivery_stats` summary (avg/min composure, stress, WPM, fillers)
+- Optional: trimmed `samples` every 10s for trend narrative
+- Timing flags
 
-### 4.4 Frontend orchestration
+**Fallback without Gemini:** extend `_presage_session_report` heuristics:
 
-1. `useComposureReactions.ts` watches `composureSample` + optional vitals poll.
-2. On trigger + cooldown OK:
-   - If AI speaking → queue interjection after TTS ends **or** merge barge-in policy (product: allow interjection to interrupt user only when stress critical).
-   - Call `/interject`, then `ask(text)` with flag `isInterjection: true` (shorter caption styling).
-3. Pass `lastInterjection` into `useCharacterExpression` for stern vs neutral.
+- Coverage = token overlap / line count
+- `confidence` from avg composure + low filler rate
+- `red_flags` if `!finished_in_time` on timed mode or empty transcript
 
-### 4.5 Director / Nemotron
+Set `source: 'gemini'` or `'presage'` on report payload; `mock: true` only for heuristic path.
 
-Keep Nemotron director on full `/turn` only. Interjections are **interviewer-only** copy to avoid doubling control planes.
+### 7.2 Wire `GET /sessions/{id}/report`
 
-**Acceptance:** Simulated high stress (or sidecar test data) produces at most one interjection per cooldown; session continues; report still makes sense.
+In `_get_or_build_session_report`, branch:
 
----
+- `speaking` → `score_speaking_session`
+- else → existing Presage/Nemotron path
 
-## Phase 5 — Sidecar & vitals plumbing (parallel / optional)
+### 7.3 Results UI
 
-Until `presage_smoke` succeeds, browser-only metrics still satisfy Phase 1.6 labels with “Sidecar offline”.
+- `report-data.ts` / `Results.tsx`: if `scenario_id === 'speaking'`, show **Speaker** instead of Opponent; duration label from `duration_mode`
+- `transcript-feedback.ts`: add **speaking catalog** entries (pace, fillers, eye line, message fit) keyed off `TranscriptSignals` extensions:
+  - `teleprompter_coverage`, `finished_in_time`, `duration_mode`
 
-1. Implement minimal HTTP sidecar on `127.0.0.1:8100`:
-   - `GET /health`
-   - `GET /composure` → JSON matching `to_composure()` in `composure.py`
-2. Add `GET /vitals` returning raw cardio/breathing for the UI pane (even if composure stays scalar).
-3. Proxy from FastAPI: `GET /sessions/{id}/vitals` reads sidecar once, adds CORS safety — frontend should not call `:8100` directly in production.
-
-Document in `handoff.md` when done.
+**Acceptance:** Report mentions delivery + content; timed early stop surfaces a clear red flag.
 
 ---
 
-## Implementation order (recommended)
+## Phase 8 — QA matrix & edge cases (0.5 day)
 
-```text
-Phase 1.1–1.5  (camera, captions, sprite, TTS sync)     ← same PR OK
-Phase 1.6        (Presage metrics completeness)
-Phase 2          (prep wizard)
-Phase 3          (continuous conversation + VAD)
-Phase 4          (interjections) — depends on 1.6 signals
-Phase 5          (sidecar) — parallel if Windows box available
-```
-
----
-
-## Testing checklist
-
-### Manual (localhost)
-
-- [ ] `npm run dev` + uvicorn; `/start` prep → live session.
-- [ ] Camera default top-right; drag/resize; no overlap with stats toggle.
-- [ ] Long interviewer question wraps; user caption animates on speak.
-- [ ] All three characters: head visible, talking sync with audio.
-- [ ] Continuous mode: silence ends turn; barge-in stops AI.
-- [ ] Without `ELEVENLABS_API_KEY`: browser TTS still syncs animation via `onstart`.
-- [ ] With mock keys only: interjection mock path fires on forced threshold in dev toggle.
-- [ ] `npm run build` clean.
-
-### Automated (add as you go)
-
-- Unit test: VAD hangover state machine (pure TS).
-- Unit test: `speakingPhase` transitions with mocked `Audio` events.
+| Case | Expected |
+|------|----------|
+| No `GEMINI_API_KEY` | Mock teleprompter + Presage report; demo still works |
+| No mic permission | Block start with clear error (same as salary) |
+| Timer expires with silence | Complete with empty transcript; report flags `empty_delivery` |
+| User ends before timer | `finished_in_time: true` but note early stop in timing notes |
+| Refresh mid-speech | Reload settings teleprompter from `GET /sessions/{id}`; prefer resume or force restart (document: **v1 = restart prep**) |
+| Camera off | Face metrics wobble mock; reactions still run but label Presage as degraded |
 
 ---
 
-## Files to touch (summary)
+## File touch list (implementation order)
 
-| Change | Files |
-|--------|--------|
-| Camera / captions / sprite CSS | `frontend/src/pages/Setup.css` |
-| Studio layout & prep split | `frontend/src/pages/Setup.tsx` → `StudioPrep.tsx`, `StudioLive.tsx` |
-| Caption component | `frontend/src/components/StageCaptionStack.tsx` |
-| TTS audible phase | `frontend/src/hooks/use-interview-machine.ts`, `use-character-expression.ts` |
-| Metrics | `use-presage-metrics.ts`, `use-composure-sampler.ts`, `contracts.ts` |
-| VAD / continuous | `frontend/src/voice/vad.ts`, `vad-config.ts`, `use-interview-machine.ts` |
-| Prep routing | `frontend/src/App.tsx`, `Home.tsx` |
-| Interject API | `backend/main.py`, `interviewer.py`, `repository.py` (optional) |
-| Vitals proxy | `backend/main.py`, `composure.py` |
-
----
-
-## Risks & mitigations
-
-| Risk | Mitigation |
-|------|------------|
-| VAD false positives in noisy hackathon rooms | Noise floor calibration + manual “Send now”; Tier 2 Silero |
-| Double camera (MediaPipe + Presage sidecar) | Document mutual exclusion per `presage-step5.md`; disable self-view when sidecar owns camera |
-| Interjections feel naggy | Cooldown + sustained thresholds + max per session |
-| Prep wizard lengthens demo | Default selections remembered in `localStorage` |
-| Large `Setup.tsx` refactor | Split prep/live first, then features |
+| Order | Path | Action |
+|-------|------|--------|
+| 1 | `backend/repository.py` | `speeches` table + accessors |
+| 2 | `backend/seed_speeches.py` | seed 3 speeches |
+| 3 | `backend/speaking.py` | teleprompter + judge |
+| 4 | `backend/main.py` | `/speeches`, `/speaking/prepare`, `/speaking/complete`; optional character nullable |
+| 5 | `backend/judge.py` | `score_session` branch for speaking |
+| 6 | `frontend/src/lib/api.ts` + `api-types.ts` | new API types |
+| 7 | `frontend/src/config/modes.ts` | `ready: true` |
+| 8 | `frontend/src/config/speaking-duration.ts` | duration options |
+| 9 | `frontend/src/config/stage-backgrounds.ts` | audience FSM URLs |
+| 10 | `frontend/src/hooks/use-audience-reaction.ts` | new |
+| 11 | `frontend/src/hooks/use-speaking-session.ts` | new |
+| 12 | `frontend/src/components/SpeakingTeleprompter.tsx` | new |
+| 13 | `frontend/src/pages/StudioPrep.tsx` | speaking steps |
+| 14 | `frontend/src/pages/Setup.tsx` | branch speaking live path |
+| 15 | `frontend/src/pages/StudioLive.tsx` | hide opponent, speaking controls |
+| 16 | `frontend/src/lib/transcript-feedback.ts` | speaking feedback rules |
+| 17 | `frontend/public/backgrounds/auditorium/*` | assets |
 
 ---
 
-## Out of scope (this plan)
+## Explicit non-goals (v1)
 
-- Production deploy / CORS (`handoff.md` backlog)
-- Enabling locked scenario modes (`interview`, `speaking`, `thesis`) beyond UI placeholders
-- Replacing MediaPipe with Presage for authoritative report composure (backend turn store remains source of truth for scoring)
+- Thesis Defense prompts or committee Q&A
+- Audience members as sprites or clickable reactions
+- Real-time Gemini coaching during the speech
+- Nemotron per-turn director or log-only session judge changes (keep existing log behavior; speaking report is Gemini/Presage)
+- Scraping HighSpark at runtime
+- Multi-segment speeches (user picks multiple excerpts in one session)
 
 ---
 
-*Replaces the previous SpeakUp **frontend integration** checklist (Phases 0–6 complete). Integration history remains in git; runtime docs stay in [handoff.md](handoff.md).*
+## Suggested build order (calendar)
+
+| Day | Deliverable |
+|-----|-------------|
+| 1 | Phase 1–2: DB + `/speeches` + teleprompter API |
+| 2 | Phase 3: Prep wizard + session settings |
+| 3 | Phase 4: Live teleprompter + timer + complete POST |
+| 4 | Phase 5–6: Auditorium FSM + polish |
+| 5 | Phase 7–8: Gemini report + QA |
+
+---
+
+## Open decisions (defaults chosen above)
+
+1. **Character ID required?** → Make optional for speaking; backend accepts `character_id: null`.
+2. **Teleprompter in `question` field** → Newline-joined string for simplicity in Results transcript view.
+3. **Reaction assets** → Dedicated PNGs preferred; CSS fallback on `aud_filled` acceptable for first paint.
+4. **Resume after refresh** → v1 restart; v2 could add `speaking_started_at` in settings.
+
+When Thesis Defense is next, mirror this plan: document upload + committee personas + multi-turn `interviewer.py` branch — but **do not** block speaking on that work.

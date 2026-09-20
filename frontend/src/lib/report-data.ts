@@ -1,4 +1,4 @@
-import type { RubricScores, SessionTurn } from './api-types'
+import type { RubricScores, SessionPersonaSettings, SessionReportPayload, SessionTurn } from './api-types'
 import { pickTranscriptImprovements, pickTranscriptStrengths, REPORT_FEEDBACK_CAP } from './transcript-feedback'
 
 export type ReportMetric = {
@@ -29,6 +29,11 @@ const RED_FLAG_LABELS: Record<string, string> = {
   very_brief_answer: 'Very brief answer',
   low_composure_on_turn: 'Low composure on this turn',
   empty_or_too_short: 'Answer was empty or too short',
+  empty_delivery: 'No spoken delivery captured',
+  missed_time_budget: 'Did not finish within the timed window',
+  low_teleprompter_coverage: 'Low teleprompter coverage',
+  high_filler_rate: 'High filler word rate',
+  low_composure_delivery: 'Composure dropped during delivery',
 }
 
 /** Presage / Nemotron red_flags are often snake_case — show readable copy in the report UI. */
@@ -107,7 +112,85 @@ export function computeOverallScore(turns: SessionTurn[]): number | null {
   return toPercent(avg(turns, (t) => t.scores.overall))
 }
 
-export function buildMetrics(turns: SessionTurn[]): ReportMetric[] {
+function speakingDurationLabel(mode: string | undefined): string {
+  if (mode === '30') return '30 second timed'
+  if (mode === '45') return '45 second timed'
+  if (mode === 'full') return 'Full length'
+  return mode?.trim() || 'Practice'
+}
+
+export function buildSpeakingMetrics(
+  turns: SessionTurn[],
+  sessionReport?: SessionReportPayload,
+  settings?: SessionPersonaSettings,
+): ReportMetric[] {
+  if (turns.length === 0) return []
+  const rubric = sessionReport?.rubric
+  const composurePct = toPercent(avg(turns, (t) => t.composure))
+  const presencePct = toPercent(rubric?.presence ?? turns[0]?.scores.presence ?? rubric?.confidence ?? 0.5)
+  const messagePct = toPercent(rubric?.message_fit ?? turns[0]?.scores.message_fit ?? rubric?.specificity ?? 0.5)
+  const coveragePct = toPercent(
+    rubric?.teleprompter_coverage ?? turns[0]?.scores.teleprompter_coverage ?? 0.5,
+  )
+  const summary = settings?.delivery_stats?.summary
+  const wpm = summary?.avg_wpm
+  const fillers = summary?.filler_count ?? 0
+  const presageDegraded = Boolean(summary?.presage_degraded)
+  const paceValue =
+    typeof wpm === 'number' && wpm > 0 ? Math.min(100, Math.round((wpm / 160) * 100)) : 55
+  const paceNote =
+    typeof wpm === 'number' && wpm > 0
+      ? `Average pace ~${Math.round(wpm)} WPM${fillers ? ` · ${fillers} filler${fillers === 1 ? '' : 's'}` : ''}.`
+      : fillers
+        ? `${fillers} filler word${fillers === 1 ? '' : 's'} noted — pause instead of um/uh.`
+        : 'Pace data will sharpen when Presage speech metrics are available.'
+  const timingNote = rubric?.timing?.notes?.trim()
+  const durationLabel = speakingDurationLabel(settings?.duration_mode ?? rubric?.timing?.mode)
+
+  return [
+    {
+      label: 'Composure',
+      value: composurePct,
+      note: presageDegraded
+        ? 'Camera was off — scores used degraded face heuristics; turn video on next run for sharper Presage.'
+        : composurePct >= 70
+          ? 'Held steady on camera through the speech.'
+          : 'Composure wavered — slow your first sentence after transitions.',
+    },
+    {
+      label: 'Presence',
+      value: presencePct,
+      note: presencePct >= 70 ? 'Stage presence read as confident.' : 'Practice eye line and stillness between phrases.',
+    },
+    {
+      label: 'Message fit',
+      value: messagePct,
+      note: messagePct >= 70 ? 'Delivery matched the teleprompter intent.' : 'Stay closer to the scripted lines for iconic beats.',
+    },
+    {
+      label: 'Teleprompter coverage',
+      value: coveragePct,
+      note:
+        coveragePct >= 65
+          ? 'You covered most of the teleprompter material.'
+          : 'Re-run with the scroll visible — hit more of the scripted lines.',
+    },
+    {
+      label: 'Pace & fillers',
+      value: paceValue,
+      note: timingNote ? `${durationLabel}. ${timingNote}` : `${durationLabel}. ${paceNote}`,
+      invert: Boolean(settings?.finished_in_time === false),
+    },
+  ]
+}
+
+export function buildMetrics(
+  turns: SessionTurn[],
+  options?: { scenarioId?: string; sessionReport?: SessionReportPayload; settings?: SessionPersonaSettings },
+): ReportMetric[] {
+  if (options?.scenarioId === 'speaking') {
+    return buildSpeakingMetrics(turns, options.sessionReport, options.settings)
+  }
   if (turns.length === 0) return []
 
   const composurePct = toPercent(avg(turns, (t) => t.composure))
@@ -170,12 +253,42 @@ export function buildStrengths(turns: SessionTurn[], cap = 3): string[] {
   return items
 }
 
-export function buildReportStrengths(turns: SessionTurn[], cap = REPORT_FEEDBACK_CAP): string[] {
-  return pickTranscriptStrengths(turns, cap)
+export function buildReportStrengths(
+  turns: SessionTurn[],
+  cap = REPORT_FEEDBACK_CAP,
+  options?: { scenarioId?: string; settings?: SessionPersonaSettings; sessionReport?: SessionReportPayload },
+): string[] {
+  const fromRubric = options?.sessionReport?.rubric?.evidence?.filter((line) => line.trim()) ?? []
+  const fromCatalog = pickTranscriptStrengths(turns, cap, options)
+  const merged: string[] = []
+  const seen = new Set<string>()
+  for (const line of [...fromRubric, ...fromCatalog]) {
+    const trimmed = line.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    merged.push(trimmed)
+    if (merged.length >= cap) break
+  }
+  return merged.length ? merged : fromCatalog
 }
 
-export function buildReportImprovements(turns: SessionTurn[], cap = REPORT_FEEDBACK_CAP): string[] {
-  return pickTranscriptImprovements(turns, cap)
+export function buildReportImprovements(
+  turns: SessionTurn[],
+  cap = REPORT_FEEDBACK_CAP,
+  options?: { scenarioId?: string; settings?: SessionPersonaSettings; sessionReport?: SessionReportPayload },
+): string[] {
+  const flags = options?.sessionReport?.rubric?.red_flags ?? []
+  const fromFlags = flags.map((f) => formatRedFlag(f)).filter(Boolean)
+  const fromCatalog = pickTranscriptImprovements(turns, cap, options)
+  const merged: string[] = []
+  const seen = new Set<string>()
+  for (const line of [...fromFlags, ...fromCatalog]) {
+    if (!line || seen.has(line)) continue
+    seen.add(line)
+    merged.push(line)
+    if (merged.length >= cap) break
+  }
+  return merged.length ? merged : fromCatalog
 }
 
 export function buildImprovements(turns: SessionTurn[], cap = 3): string[] {

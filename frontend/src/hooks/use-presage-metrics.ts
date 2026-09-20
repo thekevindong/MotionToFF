@@ -213,15 +213,19 @@ export function presageStatusLabel({
   faceReady,
   sample,
   vitals,
+  cameraDegraded = false,
 }: {
   sessionLive: boolean
   faceReady: boolean
   sample: ComposureSample | null
   vitals: PresageVitalsSnapshot
+  cameraDegraded?: boolean
 }): string {
   if (!sessionLive) return 'idle'
   if (vitals.sidecarReachable) return 'live · sidecar vitals'
+  if (cameraDegraded) return 'degraded · camera off'
   if (!faceReady) return 'calibrating camera'
   if (sample?.source === 'presage' && sample.signals.faceRaw) return 'live · face tracking'
+  if (sample?.source === 'presage' && !sample.signals.faceRaw) return 'degraded · face fallback'
   return 'speech fallback'
 }

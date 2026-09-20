@@ -19,7 +19,7 @@ export type Character = {
 export const MODES: Mode[] = [
   { id: 'salary', title: 'Salary Negotiation', desc: 'Defend your number under pressure.', ready: true },
   { id: 'interview', title: 'Mock Interview', desc: 'Behavioral and role-fit questions.', ready: false },
-  { id: 'speaking', title: 'Public Speaking', desc: 'Own the room, steady your nerves.', ready: false },
+  { id: 'speaking', title: 'Public Speaking', desc: 'Own the room, steady your nerves.', ready: true },
   { id: 'thesis', title: 'Thesis Defense', desc: 'Field hard questions on your work.', ready: false },
 ]
 

@@ -84,7 +84,7 @@ def _normalize_rubric(raw: dict[str, Any], *, mock: bool) -> RubricScores:
         red_flags = []
     red_flags = [str(x).strip() for x in red_flags if str(x).strip()]
 
-    return {
+    result: RubricScores = {
         "structure": _clamp01(raw.get("structure")),
         "specificity": _clamp01(raw.get("specificity")),
         "confidence": _clamp01(raw.get("confidence")),
@@ -93,6 +93,17 @@ def _normalize_rubric(raw: dict[str, Any], *, mock: bool) -> RubricScores:
         "overall": _clamp01(raw.get("overall")),
         "mock": mock,
     }
+    for key in ("presence", "message_fit", "teleprompter_coverage"):
+        if isinstance(raw.get(key), (int, float)):
+            result[key] = _clamp01(raw[key])
+    timing = raw.get("timing")
+    if isinstance(timing, dict):
+        result["timing"] = {
+            "mode": str(timing.get("mode") or ""),
+            "finished_in_time": bool(timing.get("finished_in_time")),
+            "notes": str(timing.get("notes") or "").strip(),
+        }
+    return result
 
 
 def _mock_score(answer: str) -> RubricScores:
@@ -391,7 +402,13 @@ def _nemotron_session_report(turns: list[dict[str, Any]], job_title: str | None)
 
 def score_session(session_id: str) -> dict[str, Any]:
     """End-of-session API report — Presage only (UI copy is client rule catalog)."""
-    from repository import get_turns
+    from repository import get_session_settings, get_turns
+
+    settings = get_session_settings(session_id)
+    if settings.get("scenario_id") == "speaking":
+        from speaking import score_speaking_session
+
+        return score_speaking_session(session_id)
 
     turns = get_turns(session_id)
     if not turns:

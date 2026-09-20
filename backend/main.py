@@ -6,6 +6,8 @@ import time
 
 from contextlib import asynccontextmanager
 
+from datetime import datetime, timezone
+
 from typing import Any
 
 
@@ -65,11 +67,15 @@ from repository import (
 
     get_session_row,
 
+    get_speech,
+
     get_turns,
 
     init_db,
 
     list_documents,
+
+    list_speeches,
 
     get_session_settings,
 
@@ -78,6 +84,8 @@ from repository import (
     set_session_setting,
 
 )
+
+from speaking import build_teleprompter
 
 
 
@@ -166,6 +174,11 @@ def health():
     return {"ok": True}
 
 
+@app.get("/speeches")
+def get_speeches_catalog():
+    return {"speeches": list_speeches()}
+
+
 
 
 
@@ -246,7 +259,18 @@ def _session_payload(session_id: str) -> dict[str, Any]:
     settings = get_session_settings(session_id)
     persona_settings = {
         key: settings[key]
-        for key in ("scenario_id", "character_id", "session_duration_sec")
+        for key in (
+            "scenario_id",
+            "character_id",
+            "session_duration_sec",
+            "speech_id",
+            "speech_title",
+            "speaker",
+            "duration_mode",
+            "target_duration_sec",
+            "teleprompter_lines",
+            "teleprompter_prepared_at",
+        )
         if key in settings
     }
 
@@ -273,6 +297,8 @@ def _session_payload(session_id: str) -> dict[str, Any]:
 ALLOWED_SCENARIO_IDS = frozenset({"salary", "interview", "speaking", "thesis"})
 ALLOWED_CHARACTER_IDS = frozenset({"recruiter", "manager", "hr"})
 ALLOWED_SESSION_DURATION_SEC = frozenset({60, 180, 300, 600, 900})
+ALLOWED_SPEAKING_SESSION_DURATION_SEC = frozenset({0, 30, 45})
+ALLOWED_SPEAKING_DURATION_MODES = frozenset({"30", "45", "full"})
 
 
 class CreateSessionRequest(BaseModel):
@@ -317,7 +343,64 @@ class SessionCloseResponse(BaseModel):
     text: str
 
 
+class SpeakingPrepareRequest(BaseModel):
 
+    speech_id: str = Field(..., min_length=1)
+
+    duration_mode: str = Field(..., min_length=1)
+
+
+class SpeakingPrepareResponse(BaseModel):
+
+    speech_id: str
+
+    speech_title: str
+
+    speaker: str
+
+    duration_mode: str
+
+    target_sec: int
+
+    lines: list[str]
+
+    estimated_sec: int | None = None
+
+    rationale: str | None = None
+
+    source: str | None = None
+
+    teleprompter_prepared_at: str
+
+
+class SpeakingDeliverySample(BaseModel):
+    ts_ms: int
+    composure: float
+    stress: float
+    engagement: float
+
+
+class SpeakingDeliverySummary(BaseModel):
+    avg_composure: float | None = None
+    min_composure: float | None = None
+    max_stress: float | None = None
+    avg_wpm: float | None = None
+    filler_count: int | None = None
+    presage_degraded: bool | None = None
+
+
+class SpeakingCompleteRequest(BaseModel):
+    transcript: str = ""
+    elapsed_sec: int = 0
+    finished_in_time: bool = False
+    ended_by: str = "user"
+    samples: list[SpeakingDeliverySample] = Field(default_factory=list)
+    summary: SpeakingDeliverySummary | None = None
+
+
+class SpeakingCompleteResponse(BaseModel):
+    ok: bool = True
+    end_session: bool = True
 
 
 @app.post("/sessions")
@@ -333,8 +416,14 @@ def post_sessions(body: CreateSessionRequest = CreateSessionRequest()):
         raise HTTPException(status_code=400, detail="invalid_character_id")
 
     duration_sec = body.session_duration_sec
-    if duration_sec is not None and duration_sec not in ALLOWED_SESSION_DURATION_SEC:
-        raise HTTPException(status_code=400, detail="invalid_session_duration")
+    if duration_sec is not None:
+        allowed = (
+            ALLOWED_SPEAKING_SESSION_DURATION_SEC
+            if scenario_id == "speaking"
+            else ALLOWED_SESSION_DURATION_SEC
+        )
+        if duration_sec not in allowed:
+            raise HTTPException(status_code=400, detail="invalid_session_duration")
 
     settings: dict[str, Any] = {}
     if scenario_id:
@@ -362,7 +451,111 @@ def get_session_by_id(session_id: str):
     return _session_payload(session_id)
 
 
+@app.post("/sessions/{session_id}/speaking/prepare")
+def post_speaking_prepare(session_id: str, body: SpeakingPrepareRequest):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
 
+    settings = get_session_settings(session_id)
+    scenario_id = settings.get("scenario_id")
+    if scenario_id != "speaking":
+        raise HTTPException(status_code=400, detail="not_speaking_session")
+
+    duration_mode = body.duration_mode.strip()
+    if duration_mode not in ALLOWED_SPEAKING_DURATION_MODES:
+        raise HTTPException(status_code=400, detail="invalid_duration_mode")
+
+    speech = get_speech(body.speech_id.strip())
+    if not speech:
+        raise HTTPException(status_code=404, detail="speech_not_found")
+
+    teleprompter = build_teleprompter(speech, duration_mode)
+    prepared_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    target_sec = int(teleprompter.get("target_sec") or 0)
+    lines = teleprompter.get("lines")
+    if not isinstance(lines, list):
+        lines = []
+
+    set_session_setting(session_id, "speech_id", speech["id"])
+    set_session_setting(session_id, "speech_title", speech["title"])
+    set_session_setting(session_id, "speaker", speech["speaker"])
+    set_session_setting(session_id, "duration_mode", duration_mode)
+    set_session_setting(session_id, "target_duration_sec", target_sec)
+    set_session_setting(session_id, "teleprompter_lines", lines)
+    set_session_setting(session_id, "teleprompter_prepared_at", prepared_at)
+
+    return SpeakingPrepareResponse(
+        speech_id=speech["id"],
+        speech_title=speech["title"],
+        speaker=speech["speaker"],
+        duration_mode=duration_mode,
+        target_sec=target_sec,
+        lines=[str(ln) for ln in lines],
+        estimated_sec=teleprompter.get("estimated_sec"),
+        rationale=teleprompter.get("rationale"),
+        source=teleprompter.get("source"),
+        teleprompter_prepared_at=prepared_at,
+    )
+
+
+@app.post("/sessions/{session_id}/speaking/complete", response_model=SpeakingCompleteResponse)
+async def post_speaking_complete(session_id: str, body: SpeakingCompleteRequest):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    settings = get_session_settings(session_id)
+    if settings.get("scenario_id") != "speaking":
+        raise HTTPException(status_code=400, detail="not_speaking_session")
+
+    lines = settings.get("teleprompter_lines")
+    if not isinstance(lines, list):
+        lines = []
+    teleprompter_text = "\n".join(str(ln) for ln in lines)
+
+    transcript = body.transcript.strip()
+    summary = body.summary.model_dump() if body.summary else {}
+    avg_composure = summary.get("avg_composure")
+    if isinstance(avg_composure, (int, float)):
+        composure_value = float(avg_composure)
+    else:
+        composure_value = await asyncio.to_thread(sample_composure, transcript or " ")
+
+    records = get_turns(session_id)
+    scores = pending_turn_scores(composure_value)
+    decision = {
+        "action": "speaking_complete",
+        "rationale": "Public speaking delivery recorded.",
+        "input_snapshot": {"composure": composure_value, "ended_by": body.ended_by},
+        "mock": True,
+    }
+    next_question = {"role": "interviewer", "text": "", "end_session": True}
+
+    record = {
+        "turn": len(records) + 1,
+        "question": teleprompter_text,
+        "answer": transcript,
+        "scores": scores,
+        "composure": composure_value,
+        "decision": decision,
+        "next_question": next_question,
+    }
+
+    delivery_stats = {
+        "summary": summary,
+        "samples": [s.model_dump() for s in body.samples[:120]],
+        "elapsed_sec": body.elapsed_sec,
+        "ended_by": body.ended_by,
+    }
+    set_session_setting(session_id, "delivery_stats", delivery_stats)
+    set_session_setting(session_id, "finished_in_time", body.finished_in_time)
+    duration_mode = settings.get("duration_mode")
+    if isinstance(duration_mode, str) and duration_mode.strip():
+        set_session_setting(session_id, "duration_mode", duration_mode.strip())
+    set_session_setting(session_id, SETTINGS_SESSION_REPORT_KEY, None)
+    append_turn(session_id, record)
+
+    return SpeakingCompleteResponse(ok=True, end_session=True)
 
 
 def _report_cache_valid(cached: dict[str, Any], turn_count: int) -> bool:
@@ -388,7 +581,13 @@ def _get_or_build_session_report(session_id: str) -> dict[str, Any]:
         return cached
     report = score_session(session_id)
     if not _report_cache_valid(report, turn_count) and turn_count > 0:
-        report = presage_session_report(get_turns(session_id), fallback=True)
+        if settings.get("scenario_id") == "speaking":
+            from speaking import score_speaking_session
+
+            report = score_speaking_session(session_id)
+            report = {**report, "fallback": True, "source": "presage_fallback"}
+        else:
+            report = presage_session_report(get_turns(session_id), fallback=True)
     set_session_setting(session_id, SETTINGS_SESSION_REPORT_KEY, report)
     return report
 
