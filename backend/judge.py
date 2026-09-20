@@ -84,7 +84,7 @@ def _nemotron_score(answer: str) -> RubricScores:
             {"role": "user", "content": user_content},
         ],
         temperature=0.15,
-        max_tokens=512,
+        max_tokens=1024,
     )
     return _normalize_rubric(raw, mock=False)
 

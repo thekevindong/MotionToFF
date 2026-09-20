@@ -16,6 +16,11 @@ DEFAULT_NEMOTRON_MODEL = "nvidia/nemotron-mini-4b-instruct"
 DEFAULT_NEMOTRON_API_BASE = "https://integrate.api.nvidia.com/v1"
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+# Nemotron / reasoning models may emit a thinking block before JSON.
+_THINKING_BLOCK = re.compile(
+    r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>",
+    re.IGNORECASE,
+)
 
 
 def nemotron_configured() -> bool:
@@ -51,12 +56,17 @@ def _extract_message_text(payload: dict[str, Any]) -> str:
     raise ValueError("Nemotron returned empty content")
 
 
-def parse_json_object(text: str) -> dict[str, Any]:
-    """Parse a JSON object from model output (fences, preamble, or trailing CoT)."""
-    stripped = text.strip()
+def _strip_reasoning_preamble(text: str) -> str:
+    stripped = _THINKING_BLOCK.sub("", text).strip()
     fence = _JSON_FENCE.search(stripped)
     if fence:
-        stripped = fence.group(1).strip()
+        return fence.group(1).strip()
+    return stripped
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    """Parse a JSON object from model output (fences, preamble, or trailing CoT)."""
+    stripped = _strip_reasoning_preamble(text)
 
     decoder = json.JSONDecoder()
     for index, char in enumerate(stripped):
@@ -70,6 +80,12 @@ def parse_json_object(text: str) -> dict[str, Any]:
             return obj
 
     raise ValueError("No JSON object found in Nemotron response")
+
+
+_JSON_RETRY_USER = (
+    "Output ONLY one JSON object. First character must be {. "
+    "No markdown, no preamble, no chain-of-thought, no analysis."
+)
 
 
 def chat_completion(
@@ -154,6 +170,20 @@ def chat_json_object(
             raise
     try:
         return parse_json_object(text)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("Nemotron JSON parse failed: %s; raw=%r", exc, text[:500])
-        raise RuntimeError(f"Nemotron returned invalid JSON: {exc}") from exc
+    except (json.JSONDecodeError, ValueError) as first_exc:
+        logger.warning("Nemotron JSON parse failed: %s; raw=%r", first_exc, text[:500])
+        retry_messages = [
+            *messages,
+            {"role": "user", "content": _JSON_RETRY_USER},
+        ]
+        try:
+            retry_text = chat_completion(
+                retry_messages,
+                temperature=min(temperature, 0.1),
+                max_tokens=max(max_tokens, 1024),
+                response_format=fmt,
+            )
+            return parse_json_object(retry_text)
+        except (json.JSONDecodeError, ValueError, RuntimeError) as retry_exc:
+            logger.warning("Nemotron JSON retry failed: %s", retry_exc)
+            raise RuntimeError(f"Nemotron returned invalid JSON: {first_exc}") from first_exc

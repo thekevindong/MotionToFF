@@ -249,7 +249,8 @@ export function useInterviewMachine({
 
       chunksRef.current = []
 
-      if (finalizeCaptureIdRef.current !== captureId) return
+      const expected = finalizeCaptureIdRef.current
+      if (expected !== captureId) return
 
       finalizeCaptureIdRef.current = null
 

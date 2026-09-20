@@ -83,7 +83,7 @@ def _nemotron_decide(
             },
         ],
         temperature=0.2,
-        max_tokens=384,
+        max_tokens=768,
     )
 
     action = str(raw.get("action", "follow_up")).strip().lower()

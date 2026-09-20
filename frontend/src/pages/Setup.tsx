@@ -27,7 +27,7 @@ import {
 } from '../lib/prep-storage'
 import { getStoredSessionId, setStoredSessionId } from '../lib/session-storage'
 import { setSession } from '../session'
-import { transcribeAudio } from '../voice/stt'
+import { sttBackoffDelayMs, transcribeAudio } from '../voice/stt'
 import { StudioLive } from './StudioLive'
 import { StudioPrep } from './StudioPrep'
 import './Setup.css'
@@ -54,7 +54,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const [startError, setStartError] = useState<string | null>(null)
   const [turnError, setTurnError] = useState<string | null>(null)
   const [transcribing, setTranscribing] = useState(false)
-  const [serverSttAvailable, setServerSttAvailable] = useState(true)
+  const transcribingRef = useRef(false)
+  const [cloudSttConfigured, setCloudSttConfigured] = useState(false)
+  const [cloudSttPausedUntil, setCloudSttPausedUntil] = useState(0)
+  const cloudSttFailureStreakRef = useRef(0)
+  const cloudSttConfiguredRef = useRef(false)
+  const cloudSttPausedUntilRef = useRef(0)
   const [voiceHint, setVoiceHint] = useState<string | null>(null)
   const [currentQuestion, setCurrentQuestion] = useState<string | null>(null)
   const [lastDirector, setLastDirector] = useState<{ action?: string; overall?: number } | null>(null)
@@ -91,16 +96,48 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   })
   const armListenRef = useRef<() => void>(() => {})
 
+  cloudSttConfiguredRef.current = cloudSttConfigured
+  cloudSttPausedUntilRef.current = cloudSttPausedUntil
+
+  const isCloudSttActiveNow = useCallback(() => {
+    const until = cloudSttPausedUntilRef.current
+    return cloudSttConfiguredRef.current && (until <= 0 || Date.now() >= until)
+  }, [])
+
+  const cloudSttActive = cloudSttConfigured && isCloudSttActiveNow()
+
+  const pauseCloudSttAfterFailure = useCallback(() => {
+    const streak = cloudSttFailureStreakRef.current + 1
+    cloudSttFailureStreakRef.current = streak
+    const delayMs = sttBackoffDelayMs(streak)
+    const until = Date.now() + delayMs
+    setCloudSttPausedUntil(until)
+    const sec = Math.max(1, Math.ceil(delayMs / 1000))
+    setVoiceHint(
+      `Cloud STT paused ~${sec}s — using browser captions for this turn. Cloud will retry automatically after that (or on your next answer).`,
+    )
+    return delayMs
+  }, [])
+
+  const markCloudSttSuccess = useCallback(() => {
+    cloudSttFailureStreakRef.current = 0
+    setCloudSttPausedUntil(0)
+  }, [])
+
   const processTurnAnswer = useCallback(
-    async (rawText: string, manual = false) => {
+    async (rawText: string, manual = false, sttFailed = false) => {
       const text = rawText.trim()
       const sessionId = getStoredSessionId() ?? undefined
       if (!text) {
         if (manual) {
           setTurnError(
-            serverSttAvailable
+            cloudSttConfigured
               ? 'No speech detected — try again.'
               : 'No speech detected. Allow the mic and speak clearly, or set ELEVENLABS_API_KEY on the backend for cloud STT.',
+          )
+        } else if (sttFailed) {
+          setTurnError(
+            'Cloud transcription failed — check ElevenLabs on the backend or speak again (browser captions used when available).',
           )
         } else {
           setTurnError(null)
@@ -125,7 +162,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         armListenRef.current()
       }
     },
-    [serverSttAvailable],
+    [cloudSttConfigured],
   )
 
   const processTurnAnswerRef = useRef(processTurnAnswer)
@@ -133,6 +170,37 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const manualSubmitRef = useRef(false)
   const stateRef = useRef<TurnState>('IDLE')
   const speakingPhaseRef = useRef<'idle' | 'loading' | 'audible'>('idle')
+  const browserSpeechApiRef = useRef({
+    getTranscript: () => '',
+    reset: () => {},
+    stop: () => {},
+  })
+  const turnWatchdogRef = useRef<ReturnType<typeof window.setTimeout>[]>([])
+
+  const clearTurnWatchdog = useCallback(() => {
+    for (const id of turnWatchdogRef.current) {
+      window.clearTimeout(id)
+    }
+    turnWatchdogRef.current = []
+  }, [])
+
+  const armTurnWatchdog = useCallback(() => {
+    clearTurnWatchdog()
+    turnWatchdogRef.current.push(
+      window.setTimeout(() => {
+        if (stateRef.current !== 'THINKING' || transcribingRef.current) return
+        setTurnError('Could not read your answer — try speaking again.')
+        armListenRef.current()
+      }, 20_000),
+    )
+    turnWatchdogRef.current.push(
+      window.setTimeout(() => {
+        if (stateRef.current !== 'THINKING') return
+        setTurnError('Audio processing timed out — try speaking again.')
+        armListenRef.current()
+      }, 130_000),
+    )
+  }, [clearTurnWatchdog])
 
   const {
     state,
@@ -149,25 +217,40 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   } = useInterviewMachine({
     stream,
     micEnabled: micOn,
-    recordAnswers: serverSttAvailable,
+    recordAnswers: cloudSttActive,
     onAnswerRecorded: async (blob) => {
+      clearTurnWatchdog()
       setTranscribing(true)
       setTurnError(null)
       let text = ''
+      let sttFailed = false
       try {
-        const result = await transcribeAudio(blob)
+        const result = await transcribeAudio(blob, {
+          onRetry: ({ attempt, maxAttempts }) => {
+            setTurnError(`Cloud transcription failed — retrying (${attempt + 1}/${maxAttempts})…`)
+            clearTurnWatchdog()
+            armTurnWatchdog()
+          },
+        })
         text = result.transcript
+        markCloudSttSuccess()
       } catch (err) {
+        sttFailed = true
         const message = err instanceof Error ? err.message : 'Transcription failed'
-        if (message.includes('ELEVENLABS')) {
-          setVoiceHint('Cloud STT is off — using browser speech recognition when you submit.')
-          setServerSttAvailable(false)
-        }
+        pauseCloudSttAfterFailure()
         setTurnError(message)
+        const fallback = browserSpeechApiRef.current.getTranscript()
+        if (fallback) {
+          text = fallback
+          sttFailed = false
+        }
       } finally {
         setTranscribing(false)
       }
-      await processTurnAnswerRef.current(text, manualSubmitRef.current)
+      browserSpeechApiRef.current.stop()
+      browserSpeechApiRef.current.reset()
+      setUserCaption('')
+      await processTurnAnswerRef.current(text, manualSubmitRef.current, sttFailed)
       manualSubmitRef.current = false
     },
   })
@@ -189,7 +272,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         setInterjectionCaption(null)
         setLastInterjectionTrigger(null)
       }
-      if (stateRef.current === 'LISTENING') {
+      if (stateRef.current === 'LISTENING' || stateRef.current === 'THINKING') {
         speakInterjection(text, clearOverlay)
         return
       }
@@ -220,6 +303,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   // Live user captions on the user's floor; cloud STT still uses MediaRecorder for /turn.
   const browserListenActive = userOwnsFloor
   const browserSpeech = useBrowserSpeechCapture(browserListenActive)
+  browserSpeechApiRef.current = {
+    getTranscript: browserSpeech.getTranscript,
+    reset: browserSpeech.reset,
+    stop: browserSpeech.stop,
+  }
   const showUserCaptions = userOwnsFloor
   const coachOverlayPlaying =
     Boolean(interjectionCaption) && state === 'LISTENING' && speakingPhase !== 'idle'
@@ -232,7 +320,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       if (stateRef.current !== 'LISTENING') return
       manualSubmitRef.current = manual
       const hadRecording = finalizeUserTurn()
-      if (!serverSttAvailable) {
+      if (!isCloudSttActiveNow()) {
         browserSpeech.stop()
         const text = browserSpeech.getTranscript()
         browserSpeech.reset()
@@ -244,9 +332,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       if (!hadRecording) {
         await processTurnAnswerRef.current('', manual)
         manualSubmitRef.current = false
+        return
       }
+      armTurnWatchdog()
     },
-    [browserSpeech, finalizeUserTurn, serverSttAvailable],
+    [armTurnWatchdog, browserSpeech, finalizeUserTurn, isCloudSttActiveNow],
   )
 
   const vadMode =
@@ -335,6 +425,20 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }, [userOwnsFloor])
 
   useEffect(() => {
+    transcribingRef.current = transcribing
+  }, [transcribing])
+
+  useEffect(() => {
+    if (!cloudSttConfigured || cloudSttPausedUntil <= Date.now()) return
+    const ms = cloudSttPausedUntil - Date.now()
+    const id = window.setTimeout(() => {
+      setCloudSttPausedUntil(0)
+      setVoiceHint('Cloud STT ready — your next answer will use ElevenLabs again.')
+    }, ms)
+    return () => window.clearTimeout(id)
+  }, [cloudSttConfigured, cloudSttPausedUntil])
+
+  useEffect(() => {
     if (state !== 'THINKING') return
     const id = window.setTimeout(() => {
       if (stateRef.current !== 'THINKING') return
@@ -417,7 +521,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     try {
       await getHealth()
       const voice = await getVoiceStatus()
-      setServerSttAvailable(voice.stt)
+      setCloudSttConfigured(voice.stt)
+      cloudSttFailureStreakRef.current = 0
+      setCloudSttPausedUntil(0)
       if (!voice.tts) {
         setVoiceHint('Interviewer voice uses your browser until ELEVENLABS_API_KEY is set on the backend.')
       }
