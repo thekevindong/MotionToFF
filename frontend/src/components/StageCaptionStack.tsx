@@ -27,7 +27,9 @@ export function StageCaptionStack({
   const [displayUser, setDisplayUser] = useState('')
   const [aiPhase, setAiPhase] = useState<'in' | 'out'>('in')
   const [userPhase, setUserPhase] = useState<'in' | 'out'>('in')
-  const genRef = useRef(0)
+  const aiBurstKeyRef = useRef(0)
+  const userBurstKeyRef = useRef(0)
+  const userBurstActiveRef = useRef(false)
   const liveAnnouncedRef = useRef('')
   const debounceRef = useRef<number | null>(null)
   const heldUserRef = useRef('')
@@ -35,17 +37,20 @@ export function StageCaptionStack({
   const userPriority = captionPriority === 'user' && userCaptionsEnabled
   const userLineTrimmed = userLine.trim()
 
+  const resetUserBurst = () => {
+    userBurstActiveRef.current = false
+    heldUserRef.current = ''
+    setDisplayUser('')
+    setUserPhase('in')
+  }
+
   useEffect(() => {
     if (!userCaptionsEnabled) {
-      heldUserRef.current = ''
-      setDisplayUser('')
-      setUserPhase('in')
+      resetUserBurst()
       return
     }
     if (captionPriority === 'ai') {
-      heldUserRef.current = ''
-      setDisplayUser('')
-      setUserPhase('in')
+      resetUserBurst()
       setAiPhase('in')
     }
   }, [userCaptionsEnabled, captionPriority])
@@ -53,10 +58,8 @@ export function StageCaptionStack({
   useEffect(() => {
     if (!visible) {
       setDisplayAi(null)
-      setDisplayUser('')
-      heldUserRef.current = ''
+      resetUserBurst()
       setAiPhase('in')
-      setUserPhase('in')
       return
     }
 
@@ -64,7 +67,7 @@ export function StageCaptionStack({
 
     const mayRefreshAi = aiLine && aiLine !== displayAi
     if (mayRefreshAi) {
-      genRef.current += 1
+      aiBurstKeyRef.current += 1
       setDisplayAi(aiLine)
       setAiPhase('in')
     }
@@ -75,18 +78,20 @@ export function StageCaptionStack({
 
     if (userLineTrimmed) {
       heldUserRef.current = userLineTrimmed
-      if (displayUser !== userLine) {
-        genRef.current += 1
-        setDisplayUser(userLine)
+      if (!userBurstActiveRef.current) {
+        userBurstActiveRef.current = true
+        userBurstKeyRef.current += 1
         setUserPhase('in')
       }
+      setDisplayUser(userLine)
       return
     }
 
     if (!heldUserRef.current) {
+      userBurstActiveRef.current = false
       setDisplayUser('')
     }
-  }, [userLine, userLineTrimmed, visible, userPriority, displayUser])
+  }, [userLine, userLineTrimmed, visible, userPriority])
 
   const ariaText = userPriority ? heldUserRef.current || userLineTrimmed : displayAi ?? ''
 
@@ -123,7 +128,7 @@ export function StageCaptionStack({
     >
       {showAi && displayAi && (
         <p
-          key={`ai-${genRef.current}`}
+          key={`ai-${aiBurstKeyRef.current}`}
           className={`caption-line caption-line--ai${aiInterjection ? ' caption-line--interjection' : ''} caption-line--${aiPhase}`}
         >
           {displayAi}
@@ -131,7 +136,7 @@ export function StageCaptionStack({
       )}
       {showUser && (
         <p
-          key={`user-${genRef.current}`}
+          key={`user-${userBurstKeyRef.current}`}
           className={`caption-line caption-line--user caption-line--${userPhase}`}
         >
           {userText}

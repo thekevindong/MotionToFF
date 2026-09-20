@@ -279,6 +279,7 @@ def _session_payload(session_id: str) -> dict[str, Any]:
             "defense_filename",
             "defense_text_preview",
             "thesis_phase",
+            "presentation_completed_at",
             "skipped_qa",
             "speech_id",
             "speech_title",

@@ -151,7 +151,8 @@ SALARY_FOLLOWUP_SUFFIX = (
     "\n\nBrief acknowledgment + one salary negotiation question (~35–55 words total)."
 )
 THESIS_FOLLOWUP_SUFFIX = (
-    "\n\nBrief acknowledgment, then exactly ONE new defense question (~35 words). "
+    "\n\nBrief varied acknowledgment (do not repeat the same opener each turn), "
+    "then exactly ONE new defense question (~35 words). "
     "Vary angle (methods, results, validity, limitations). Never ask about content not in the uploaded defense text."
 )
 JSON_TURN_REMINDER = (
@@ -310,6 +311,44 @@ MOCK_NATURAL_CLOSINGS = [
     "That works for us. I appreciate how you handled this — we'll end the session here.",
 ]
 
+MOCK_ACK_INTERVIEW = (
+    "Thanks — that's helpful.",
+    "I appreciate that detail.",
+    "Good — that clarifies things.",
+    "Understood, thank you.",
+    "That's useful context.",
+)
+
+MOCK_ACK_SALARY = (
+    "I hear you on that.",
+    "That's a fair point.",
+    "Thanks for laying that out.",
+    "Understood — let's keep going.",
+    "Noted — appreciate the clarity.",
+)
+
+MOCK_ACK_THESIS = (
+    "Thank you.",
+    "I see.",
+    "Understood.",
+    "All right.",
+    "Noted — let's continue.",
+    "That's clear.",
+    "Good — one more angle.",
+)
+
+
+def _mock_acknowledgment_prefix(session_id: str | None, turn_index: int) -> str:
+    if _is_thesis_scenario(session_id):
+        pool = MOCK_ACK_THESIS
+    elif _is_salary_scenario(session_id):
+        pool = MOCK_ACK_SALARY
+    else:
+        pool = MOCK_ACK_INTERVIEW
+    idx = hash((session_id or "", turn_index)) % len(pool)
+    return pool[idx]
+
+
 def _mock_next_turn(history: History, session_id: str | None = None) -> dict[str, Any]:
     if history and _mock_negotiation_complete(history, session_id):
         idx = len(history) % len(MOCK_NATURAL_CLOSINGS)
@@ -325,7 +364,8 @@ def _mock_next_turn(history: History, session_id: str | None = None) -> dict[str
         return {"role": "interviewer", "text": question, "end_session": False}
     answer = _latest_candidate_answer(history)
     if answer:
-        text = f"Thanks — that's helpful context. {question}"
+        prefix = _mock_acknowledgment_prefix(session_id, turn_index)
+        text = f"{prefix} {question}" if prefix.endswith((".", "!", "?")) else f"{prefix} — {question}"
         return {"role": "interviewer", "text": text, "end_session": False}
     return {"role": "interviewer", "text": question, "end_session": False}
 

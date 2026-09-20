@@ -134,7 +134,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     (defaults.thesisPackId as ThesisPackId | undefined) ?? 'short',
   )
   const [thesisPrep, setThesisPrep] = useState<ThesisPrepareResponse | null>(null)
+  const [thesisLiveKey, setThesisLiveKey] = useState(0)
   const [thesisRestore, setThesisRestore] = useState<'idle' | 'loading' | 'done'>('idle')
+  const thesisLaunchInFlightRef = useRef(false)
   const [thesisDefenseReady, setThesisDefenseReady] = useState(false)
   const [thesisDefensePreview, setThesisDefensePreview] = useState('')
   const [thesisDefenseFileError, setThesisDefenseFileError] = useState<string | null>(null)
@@ -821,6 +823,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       if (thesisPrep) setThesisRestore('done')
       return
     }
+    if (thesisLaunchInFlightRef.current) return
     let cancelled = false
     setThesisRestore('loading')
     void (async () => {
@@ -835,9 +838,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       }
       try {
         const data = await getSession(sessionId)
+        if (cancelled || thesisLaunchInFlightRef.current) return
+        if (getStoredSessionId() !== sessionId) return
         const prep = thesisPrepFromSettings(data.settings)
         if (!prep) throw new Error('missing thesis prep')
-        if (cancelled) return
+        if (cancelled || thesisLaunchInFlightRef.current) return
+        if (getStoredSessionId() !== sessionId) return
         setThesisPrep(prep)
         setCharId(prep.character_id)
         const dur = data.settings?.session_duration_sec
@@ -960,7 +966,12 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         })
         await uploadDocument(session_id, defenseFile)
         const prep = await postThesisPrepare(session_id, { thesisPack: thesisPackId })
-        setThesisPrep(prep)
+        setThesisLiveKey((k) => k + 1)
+        setThesisPrep({
+          ...prep,
+          thesis_phase: 'presentation',
+          source: 'launch',
+        })
         setCharId(prep.character_id)
         setStoredSessionId(session_id)
         setSessionDurationSec(durationSec)
@@ -1046,11 +1057,21 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       thesisPackId: mode.id === 'thesis' ? thesisPackId : undefined,
     })
     markPrepComplete()
+    if (mode.id === 'thesis') {
+      thesisLaunchInFlightRef.current = true
+    }
     setStudioPhase('live')
     if (window.location.pathname !== '/start/live') {
       navigate('/start/live')
     }
-    const ok = await startSession()
+    let ok = false
+    try {
+      ok = await startSession()
+    } finally {
+      if (mode.id === 'thesis') {
+        thesisLaunchInFlightRef.current = false
+      }
+    }
     if (!ok) {
       navigate('/start')
     }
@@ -1378,6 +1399,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   if (isThesisMode && thesisPrep && liveCharacter) {
     return (
       <ThesisLive
+        key={thesisLiveKey}
         mode={mode}
         prep={thesisPrep}
         character={liveCharacter}

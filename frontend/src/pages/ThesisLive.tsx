@@ -95,10 +95,9 @@ export function ThesisLive({
   const [generatingReport, setGeneratingReport] = useState(false)
   const sessionClosingRef = useRef(false)
   const handoffPlayedRef = useRef(false)
-  const restoredQaEntryRef = useRef(
-    prep.thesis_phase === 'qa' && prep.source === 'session',
-  )
+  const restoredQaEntryRef = useRef(false)
   const restoredQuestionPlayedRef = useRef(false)
+  const sessionResumeCheckedRef = useRef(false)
 
   const [statsOpen, setStatsOpen] = useState(true)
   const [micOn, setMicOn] = useState(true)
@@ -235,29 +234,51 @@ export function ThesisLive({
   })
 
   useEffect(() => {
-    if (prep.thesis_phase !== 'qa' || prep.source !== 'session' || qaStarted) return
-    void bootstrapQa(null)
-  }, [bootstrapQa, prep.source, prep.thesis_phase, qaStarted])
+    if (prep.source !== 'launch') return
+    setSessionPhase('presentation')
+    setQaStarted(false)
+    handoffPlayedRef.current = false
+    restoredQaEntryRef.current = false
+    restoredQuestionPlayedRef.current = false
+    sessionResumeCheckedRef.current = false
+  }, [prep.source])
 
   useEffect(() => {
-    if (prep.thesis_phase !== 'qa' || prep.source !== 'session' || !qaStarted) return
-    const sessionId = getStoredSessionId()
-    if (!sessionId) return
+    if (sessionResumeCheckedRef.current) return
+    if (prep.source !== 'session' || prep.thesis_phase !== 'qa' || qaStarted) return
+    sessionResumeCheckedRef.current = true
+    let cancelled = false
     void (async () => {
+      const sessionId = getStoredSessionId()
+      if (!sessionId) return
       try {
         const data = await getSession(sessionId)
+        if (cancelled || getStoredSessionId() !== sessionId) return
+        const completed = Boolean(data.settings?.presentation_completed_at?.trim())
+        const skipped = Boolean(data.settings?.skipped_qa)
+        if (!completed || skipped) {
+          setSessionPhase('presentation')
+          return
+        }
+        restoredQaEntryRef.current = true
         const qaTurns = Math.max(0, (data.turns?.length ?? 1) - 1)
         setQaAnswersCompleted(qaTurns)
+        await bootstrapQa(null)
+        if (cancelled) return
         const q = data.current_question?.text?.trim()
         if (q) {
           setCurrentQuestion(q)
           setAiCaption(q)
         }
       } catch {
-        /* handoff effect will still play if currentQuestion was set by bootstrap */
+        setSessionPhase('presentation')
+        setTurnError('Could not resume Q&A — start your presentation again.')
       }
     })()
-  }, [prep.source, prep.thesis_phase, qaStarted])
+    return () => {
+      cancelled = true
+    }
+  }, [bootstrapQa, prep.source, prep.thesis_phase, qaStarted])
 
   const askCommittee = useCallback(
     (

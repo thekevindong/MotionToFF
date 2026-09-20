@@ -81,6 +81,7 @@ export type SessionPersonaSettings = {
   defense_filename?: string
   defense_text_preview?: string
   thesis_phase?: 'presentation' | 'qa' | 'done'
+  presentation_completed_at?: string
   skipped_qa?: boolean
   speech_id?: string
   speech_title?: string

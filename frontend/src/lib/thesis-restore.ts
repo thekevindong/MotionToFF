@@ -18,6 +18,10 @@ export function thesisPrepFromSettings(
   const characterId = settings.character_id?.trim()
   if (!characterId) return null
   const voiceGender = settings.committee_voice_gender === 'male' ? 'male' : 'female'
+  const presentationDone = Boolean(settings.presentation_completed_at?.trim())
+  const phaseRaw = settings.thesis_phase
+  const thesis_phase =
+    presentationDone && (phaseRaw === 'qa' || phaseRaw === 'done') ? phaseRaw : 'presentation'
   return {
     thesis_pack: pack as ThesisPackId,
     presentation_duration_sec: presentationSec,
@@ -27,9 +31,7 @@ export function thesisPrepFromSettings(
     defense_document_id: defenseId,
     defense_filename: settings.defense_filename?.trim() || 'defense.txt',
     defense_text_preview: settings.defense_text_preview?.trim() || '',
-    thesis_phase: settings.thesis_phase === 'qa' || settings.thesis_phase === 'done'
-      ? settings.thesis_phase
-      : 'presentation',
+    thesis_phase,
     source: 'session',
   }
 }
