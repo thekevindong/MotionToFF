@@ -254,6 +254,8 @@ export type StudioLiveProps = {
   aiCaptionLine: string | null
   aiCaptionInterjection?: boolean
   userCaption: string
+  userCaptionsEnabled?: boolean
+  captionPriority?: 'user' | 'ai'
   displayError: string | null
   voiceHint: string | null
   stream: MediaStream | null
@@ -287,6 +289,8 @@ export function StudioLive({
   aiCaptionLine,
   aiCaptionInterjection = false,
   userCaption,
+  userCaptionsEnabled = true,
+  captionPriority = 'ai',
   displayError,
   voiceHint,
   stream,
@@ -355,6 +359,8 @@ export function StudioLive({
               visible={sessionLive}
               aiLine={aiCaptionLine}
               userLine={userCaption}
+              userCaptionsEnabled={userCaptionsEnabled}
+              captionPriority={captionPriority}
               aiInterjection={aiCaptionInterjection}
             />
           </div>

@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 RubricScores = dict[str, Any]
 
 JUDGE_SYSTEM = """You are an interview rubric judge. You never speak to the candidate.
-Score only the candidate's answer text. Output a single JSON object with no markdown.
+Score only the candidate's answer text. Reply with exactly one JSON object: no markdown,
+no preamble, no chain-of-thought, no analysis steps. The first character must be {.
 All numeric scores must be floats between 0.0 and 1.0 (higher is better except red_flags).
 Required keys:
 - structure (float)

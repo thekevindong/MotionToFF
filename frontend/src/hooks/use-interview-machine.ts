@@ -60,6 +60,10 @@ export function useInterviewMachine({
 
   const speakTokenRef = useRef(0)
 
+  /** Correlate MediaRecorder.onstop with an intentional finalizeUserTurn (ignore stray stops). */
+  const utteranceCaptureIdRef = useRef(0)
+  const finalizeCaptureIdRef = useRef<number | null>(null)
+
   const onAnswerRef = useRef(onAnswerRecorded)
 
   onAnswerRef.current = onAnswerRecorded
@@ -166,6 +170,8 @@ export function useInterviewMachine({
 
     if (preRollRecorderRef.current) return
 
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') return
+
     const audioTracks = stream.getAudioTracks().filter((t) => t.enabled)
 
     if (audioTracks.length === 0) return
@@ -226,6 +232,9 @@ export function useInterviewMachine({
 
     stopPreRoll()
 
+    utteranceCaptureIdRef.current += 1
+    const captureId = utteranceCaptureIdRef.current
+
     const recorder = new MediaRecorder(audioStream)
 
     recorder.ondataavailable = (e) => {
@@ -240,13 +249,20 @@ export function useInterviewMachine({
 
       chunksRef.current = []
 
+      if (finalizeCaptureIdRef.current !== captureId) return
+
+      finalizeCaptureIdRef.current = null
+
       onAnswerRef.current?.(blob)
 
     }
 
-    recorder.start()
-
-    recorderRef.current = recorder
+    try {
+      recorder.start()
+      recorderRef.current = recorder
+    } catch {
+      recorderRef.current = null
+    }
 
   }, [stream, stopPreRoll])
 
@@ -384,6 +400,14 @@ export function useInterviewMachine({
 
   )
 
+  /** Short overlay line (e.g. composure interjection) — does not stop answer capture or change turn state. */
+  const speakInterjection = useCallback(
+    (text: string, onDone?: () => void) => {
+      speak(text, onDone)
+    },
+    [speak],
+  )
+
 
 
   const ask = useCallback(
@@ -418,6 +442,8 @@ export function useInterviewMachine({
 
   const armListenMode = useCallback(() => {
 
+    finalizeCaptureIdRef.current = null
+
     stopSpeaking()
 
     stopRecording()
@@ -444,6 +470,10 @@ export function useInterviewMachine({
 
     const hadUtteranceRecording =
       !!recorderRef.current && recorderRef.current.state !== 'inactive'
+
+    if (hadUtteranceRecording) {
+      finalizeCaptureIdRef.current = utteranceCaptureIdRef.current
+    }
 
     stopSpeaking()
 
@@ -564,6 +594,8 @@ export function useInterviewMachine({
     reset,
 
     stopSpeaking,
+
+    speakInterjection,
 
   }
 

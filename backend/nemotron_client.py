@@ -52,16 +52,24 @@ def _extract_message_text(payload: dict[str, Any]) -> str:
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
-    """Parse a JSON object from model output (tolerates markdown fences)."""
+    """Parse a JSON object from model output (fences, preamble, or trailing CoT)."""
     stripped = text.strip()
     fence = _JSON_FENCE.search(stripped)
     if fence:
         stripped = fence.group(1).strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in Nemotron response")
-    return json.loads(stripped[start : end + 1])
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(stripped):
+        if char != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+
+    raise ValueError("No JSON object found in Nemotron response")
 
 
 def chat_completion(
@@ -69,18 +77,21 @@ def chat_completion(
     *,
     temperature: float = 0.2,
     max_tokens: int = 1024,
+    response_format: dict[str, Any] | None = None,
 ) -> str:
     api_key = os.getenv("NEMOTRON_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("NEMOTRON_API_KEY is not set")
 
     url = f"{_api_base()}/chat/completions"
-    body = {
+    body: dict[str, Any] = {
         "model": _model(),
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if response_format is not None:
+        body["response_format"] = response_format
 
     request = urllib.request.Request(
         url,
@@ -104,13 +115,43 @@ def chat_completion(
     return _extract_message_text(payload)
 
 
+def _json_response_format() -> dict[str, Any] | None:
+    """NIM OpenAI-compatible JSON mode; disable with NEMOTRON_JSON_MODE=off."""
+    mode = os.getenv("NEMOTRON_JSON_MODE", "json_object").strip().lower()
+    if mode in ("off", "false", "0", "none"):
+        return None
+    if mode == "json_object":
+        return {"type": "json_object"}
+    raise ValueError(f"Unsupported NEMOTRON_JSON_MODE: {mode}")
+
+
 def chat_json_object(
     messages: list[dict[str, str]],
     *,
     temperature: float = 0.2,
     max_tokens: int = 1024,
+    response_format: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    text = chat_completion(messages, temperature=temperature, max_tokens=max_tokens)
+    fmt = response_format if response_format is not None else _json_response_format()
+    try:
+        text = chat_completion(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=fmt,
+        )
+    except RuntimeError as exc:
+        # Some hosted models reject response_format; retry once without it.
+        if fmt is not None and "HTTP 400" in str(exc):
+            logger.warning("Nemotron rejected response_format, retrying without: %s", exc)
+            text = chat_completion(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=None,
+            )
+        else:
+            raise
     try:
         return parse_json_object(text)
     except (json.JSONDecodeError, ValueError) as exc:

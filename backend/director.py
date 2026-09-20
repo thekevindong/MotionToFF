@@ -20,7 +20,8 @@ VALID_ACTIONS = frozenset(
 
 DIRECTOR_SYSTEM = """You are an interview session director. You never speak to the candidate.
 Choose the next session control action based on rubric scores and composure (0-1).
-Output a single JSON object with no markdown.
+Reply with exactly one JSON object: no markdown, no preamble, no chain-of-thought.
+The first character must be {.
 Required keys:
 - action: exactly one of press_harder, follow_up, move_on, curveball, ease_off
 - rationale: one or two sentences for eval logs (not shown to candidate)"""

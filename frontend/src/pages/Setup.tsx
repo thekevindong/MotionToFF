@@ -145,6 +145,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     finish,
     reset,
     stopSpeaking,
+    speakInterjection,
   } = useInterviewMachine({
     stream,
     micEnabled: micOn,
@@ -184,14 +185,17 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     (text: string, trigger: InterjectTrigger) => {
       setInterjectionCaption(text)
       setLastInterjectionTrigger(trigger)
-      ask(text, {
-        onSpoken: () => {
-          setInterjectionCaption(null)
-          setLastInterjectionTrigger(null)
-        },
-      })
+      const clearOverlay = () => {
+        setInterjectionCaption(null)
+        setLastInterjectionTrigger(null)
+      }
+      if (stateRef.current === 'LISTENING') {
+        speakInterjection(text, clearOverlay)
+        return
+      }
+      ask(text, { onSpoken: clearOverlay })
     },
-    [ask],
+    [ask, speakInterjection],
   )
 
   askRef.current = playMainQuestion
@@ -210,11 +214,18 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     questionId,
     getMetrics,
   })
-  const browserListenActive =
-    sessionLive &&
-    micOn &&
-    (state === 'LISTENING' || (state === 'ASKING' && speakingPhase === 'audible'))
+  // User owns the floor only in LISTENING with no AI TTS (main question or interjection overlay).
+  const userOwnsFloor =
+    sessionLive && micOn && state === 'LISTENING' && speakingPhase === 'idle'
+  // Live user captions on the user's floor; cloud STT still uses MediaRecorder for /turn.
+  const browserListenActive = userOwnsFloor
   const browserSpeech = useBrowserSpeechCapture(browserListenActive)
+  const showUserCaptions = userOwnsFloor
+  const coachOverlayPlaying =
+    Boolean(interjectionCaption) && state === 'LISTENING' && speakingPhase !== 'idle'
+  /** Barge-in / answer turn: user over AI. Main question + coach overlay: AI over user. */
+  const captionPriority: 'user' | 'ai' =
+    userOwnsFloor && !coachOverlayPlaying ? 'user' : 'ai'
 
   const commitUserTurn = useCallback(
     async (manual: boolean) => {
@@ -241,7 +252,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const vadMode =
     state === 'ASKING' && speakingPhase === 'audible' ? 'barge-in' : 'utterance'
   const vadEnabled =
-    sessionLive && micOn && (state === 'LISTENING' || (state === 'ASKING' && speakingPhase === 'audible'))
+    sessionLive &&
+    micOn &&
+    ((state === 'LISTENING' && speakingPhase === 'idle') ||
+      (state === 'ASKING' && speakingPhase === 'audible'))
 
   useVoiceActivity(stream, vadEnabled, vadMode, {
     onSpeechStart: () => {
@@ -285,7 +299,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     backendComposure,
     faceReady,
     getTranscript: browserSpeech.getTranscript,
-    listening: sessionLive && state === 'LISTENING',
+    listening: userOwnsFloor,
     vitals: presageVitals,
   })
   const presageStatus = presageStatusLabel({
@@ -305,7 +319,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   )
 
   useEffect(() => {
-    if (!sessionLive || !micOn) {
+    if (!showUserCaptions) {
       setUserCaption('')
       return
     }
@@ -313,7 +327,22 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       setUserCaption(browserSpeech.getLiveCaption())
     }, 200)
     return () => window.clearInterval(id)
-  }, [sessionLive, micOn, browserSpeech])
+  }, [showUserCaptions, browserSpeech])
+
+  useEffect(() => {
+    if (userOwnsFloor) return
+    setUserCaption('')
+  }, [userOwnsFloor])
+
+  useEffect(() => {
+    if (state !== 'THINKING') return
+    const id = window.setTimeout(() => {
+      if (stateRef.current !== 'THINKING') return
+      setTurnError('That took too long — try speaking again.')
+      armListenRef.current()
+    }, 75_000)
+    return () => window.clearTimeout(id)
+  }, [state])
 
   useEffect(() => {
     if (!started) return
@@ -580,7 +609,9 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         opponentImg={opponentImg}
         aiCaptionLine={aiCaptionLine}
         aiCaptionInterjection={aiCaptionInterjection}
-        userCaption={userCaption}
+        userCaption={showUserCaptions ? userCaption : ''}
+        userCaptionsEnabled={showUserCaptions}
+        captionPriority={captionPriority}
         displayError={displayError}
         voiceHint={voiceHint}
         stream={stream}

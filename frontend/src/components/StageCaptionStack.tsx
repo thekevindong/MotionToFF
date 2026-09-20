@@ -4,17 +4,23 @@ type Props = {
   aiLine: string | null
   userLine: string
   visible: boolean
-  /** Extra right inset when self-view tile is anchored top-right */
+  /** When false (AI TTS playing), hide user line immediately. */
+  userCaptionsEnabled?: boolean
+  /** Barge-in / answer: user wins. Main question + coach overlay: AI wins. */
+  captionPriority?: 'user' | 'ai'
   reserveRightPx?: number
   aiInterjection?: boolean
 }
 
 const LIVE_DEBOUNCE_MS = 800
+const USER_PRIORITY_HOLD_MS = 60
 
 export function StageCaptionStack({
   aiLine,
   userLine,
   visible,
+  userCaptionsEnabled = true,
+  captionPriority = 'ai',
   reserveRightPx = 0,
   aiInterjection = false,
 }: Props) {
@@ -25,8 +31,31 @@ export function StageCaptionStack({
   const genRef = useRef(0)
   const liveAnnouncedRef = useRef('')
   const debounceRef = useRef<number | null>(null)
+  const [userCaptionLive, setUserCaptionLive] = useState(false)
 
-  const userActive = userLine.trim().length > 0
+  const userLineTrimmed = userLine.trim()
+  const userInputActive =
+    captionPriority === 'user' && userCaptionsEnabled && userLineTrimmed.length > 0
+
+  useEffect(() => {
+    if (!userCaptionsEnabled || captionPriority === 'ai') {
+      setUserCaptionLive(false)
+      setDisplayUser('')
+      setUserPhase('in')
+      if (captionPriority === 'ai') setAiPhase('in')
+    }
+  }, [userCaptionsEnabled, captionPriority])
+
+  useEffect(() => {
+    if (!userCaptionsEnabled || captionPriority !== 'user') return
+    if (!userInputActive) {
+      setUserCaptionLive(false)
+      return
+    }
+    const holdMs = USER_PRIORITY_HOLD_MS
+    const t = window.setTimeout(() => setUserCaptionLive(true), holdMs)
+    return () => window.clearTimeout(t)
+  }, [userInputActive, userCaptionsEnabled, captionPriority])
 
   useEffect(() => {
     if (!visible) {
@@ -34,24 +63,25 @@ export function StageCaptionStack({
       setDisplayUser('')
       setAiPhase('in')
       setUserPhase('in')
+      setUserCaptionLive(false)
       return
     }
 
-    if (aiLine && aiLine !== displayAi && !userActive) {
+    const aiWinsStack = captionPriority === 'ai'
+    const mayRefreshAi = aiLine && aiLine !== displayAi && (aiWinsStack || !userCaptionLive)
+    if (mayRefreshAi) {
       genRef.current += 1
       setDisplayAi(aiLine)
       setAiPhase('in')
     }
-  }, [aiLine, visible, userActive, displayAi])
+  }, [aiLine, visible, userCaptionLive, captionPriority, displayAi])
 
   useEffect(() => {
-    if (!visible) return
+    if (!visible || captionPriority !== 'user' || !userCaptionsEnabled) return
 
-    if (userActive) {
+    if (userCaptionLive) {
       if (displayUser !== userLine) {
-        if (!displayUser.trim() && displayAi) {
-          setAiPhase('out')
-        }
+        if (!displayUser.trim() && displayAi) setAiPhase('out')
         genRef.current += 1
         setDisplayUser(userLine)
         setUserPhase('in')
@@ -61,12 +91,13 @@ export function StageCaptionStack({
       const t = window.setTimeout(() => setDisplayUser(''), 320)
       return () => window.clearTimeout(t)
     }
-  }, [userLine, userActive, visible, displayUser, displayAi])
+  }, [userLine, userCaptionLive, visible, displayUser, displayAi, captionPriority, userCaptionsEnabled])
 
-  const ariaText = userActive ? userLine : displayAi ?? ''
+  const ariaText =
+    captionPriority === 'user' && userCaptionLive ? userLine : displayAi ?? ''
 
   useEffect(() => {
-    if (!visible || !userActive) {
+    if (!visible || !userCaptionLive || captionPriority !== 'user') {
       liveAnnouncedRef.current = ''
       if (debounceRef.current) window.clearTimeout(debounceRef.current)
       return
@@ -81,16 +112,20 @@ export function StageCaptionStack({
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current)
     }
-  }, [userLine, userActive, visible])
+  }, [userLine, userCaptionLive, visible, captionPriority])
 
   if (!visible) return null
 
-  const showAi = Boolean(displayAi) && (!userActive || aiPhase === 'out')
-  const showUser = Boolean(displayUser.trim())
+  const showUser =
+    captionPriority === 'user' && userCaptionsEnabled && userCaptionLive && Boolean(displayUser.trim())
+
+  const showAi =
+    Boolean(displayAi) &&
+    (captionPriority === 'ai' ? aiPhase !== 'out' : !userCaptionLive || aiPhase === 'out')
 
   return (
     <div
-      className="caption-stack"
+      className={`caption-stack caption-stack--priority-${captionPriority}`}
       style={reserveRightPx > 0 ? { marginRight: reserveRightPx } : undefined}
       aria-live="polite"
       aria-atomic="true"

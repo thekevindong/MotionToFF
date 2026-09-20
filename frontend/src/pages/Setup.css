@@ -485,6 +485,15 @@
   backdrop-filter: blur(6px);
 }
 
+.caption-stack--priority-user .caption-line--user {
+  position: relative;
+  z-index: 2;
+}
+.caption-stack--priority-ai .caption-line--ai {
+  position: relative;
+  z-index: 2;
+}
+
 .caption-stack {
   position: absolute;
   left: 50%;
