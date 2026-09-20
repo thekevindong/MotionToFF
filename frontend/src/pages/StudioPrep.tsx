@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { ContextPanel } from '../components/ContextPanel'
 import { MODES, SALARY_CHARACTERS, type Character, type Mode } from '../config/modes'
@@ -87,6 +87,9 @@ export function StudioPrep({
   const [speeches, setSpeeches] = useState<SpeechCatalogItem[]>([])
   const [speechesLoading, setSpeechesLoading] = useState(false)
   const [speechesError, setSpeechesError] = useState<string | null>(null)
+  const [customFileName, setCustomFileName] = useState<string | null>(null)
+  const [customFileError, setCustomFileError] = useState<string | null>(null)
+  const speechTxtInputRef = useRef<HTMLInputElement>(null)
 
   const mode = MODES.find((m) => m.id === modeId) ?? null
   const isSpeaking = mode?.id === 'speaking'
@@ -97,6 +100,30 @@ export function StudioPrep({
   const speechLabel = isCustomSpeech ? 'Your speech' : (selectedSpeech?.title ?? 'Speech')
   const speechSpeaker = isCustomSpeech ? 'You' : (selectedSpeech?.speaker ?? 'Speaker')
   const speechChosen = Boolean(selectedSpeech || customReady)
+
+  const onSpeechTxtPicked = (files: FileList | null) => {
+    setCustomFileError(null)
+    const file = files?.[0]
+    if (!file) return
+    const lower = file.name.toLowerCase()
+    const okType = lower.endsWith('.txt') || file.type === 'text/plain' || file.type === ''
+    if (!okType) {
+      setCustomFileError('Choose one plain-text file (.txt), not a folder or other format.')
+      setCustomFileName(null)
+      return
+    }
+    setCustomFileName(file.name)
+    void file.text().then(
+      (text) => {
+        const title = file.name.replace(/\.txt$/i, '').trim() || 'Your speech'
+        onCustomSpeech({ excerpt: text, title, speaker: 'You' })
+      },
+      () => {
+        setCustomFileError('Could not read that file — try a UTF-8 .txt file.')
+        setCustomFileName(null)
+      },
+    )
+  }
   const activeIdx = stepIndex(step)
 
   useEffect(() => {
@@ -120,6 +147,13 @@ export function StudioPrep({
       cancelled = true
     }
   }, [isSpeaking])
+
+  useEffect(() => {
+    if (speechId !== CUSTOM_SPEECH_ID) {
+      setCustomFileName(null)
+      setCustomFileError(null)
+    }
+  }, [speechId])
 
   const opponentReady = isSpeaking ? Boolean(speechId && (isCustomSpeech ? customReady : true)) : Boolean(character)
 
@@ -285,24 +319,38 @@ export function StudioPrep({
             style={{ marginBottom: 16 }}
           >
             <span className="mode-name">Your own speech</span>
-            <span className="mode-desc">Upload a .txt file or paste the text you want on the teleprompter.</span>
-            <label className="context-upload-btn" style={{ marginTop: 10, display: 'inline-block' }}>
+            <span className="mode-desc">
+              Pick one .txt file (single file, not a folder) or paste below.
+            </span>
+            <div className="prep-speech-file-row">
+              <button
+                type="button"
+                className="context-upload-btn"
+                onClick={() => speechTxtInputRef.current?.click()}
+              >
+                Choose .txt file
+              </button>
               <input
+                ref={speechTxtInputRef}
                 type="file"
+                className="context-file-input"
                 accept=".txt,text/plain"
-                hidden
                 onChange={(e) => {
-                  const file = e.target.files?.[0]
+                  onSpeechTxtPicked(e.target.files)
                   e.target.value = ''
-                  if (!file) return
-                  void file.text().then((text) => {
-                    const title = file.name.replace(/\.txt$/i, '').trim() || 'Your speech'
-                    onCustomSpeech({ excerpt: text, title, speaker: 'You' })
-                  })
                 }}
               />
-              Upload .txt
-            </label>
+              {customFileName && isCustomSpeech && (
+                <span className="prep-speech-file-name" title={customFileName}>
+                  Loaded: {customFileName}
+                </span>
+              )}
+            </div>
+            {customFileError && (
+              <p className="prep-error" role="alert" style={{ marginTop: 8 }}>
+                {customFileError}
+              </p>
+            )}
             <textarea
               className="prep-custom-speech"
               placeholder="Or paste your speech here (at least 8 words)…"

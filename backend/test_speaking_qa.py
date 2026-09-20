@@ -19,6 +19,27 @@ def test_mock_teleprompter_without_gemini_key():
     assert int(result.get("target_sec") or 0) == 30
 
 
+def test_timed_teleprompter_ends_on_full_sentences():
+    speech = {
+        "speaker": "Test",
+        "title": "Test",
+        "excerpt_text": (
+            "We hold these truths to be self-evident. "
+            "That all men are created equal. "
+            "That they are endowed by their Creator with certain unalienable Rights. "
+            "That among these are Life, Liberty and the pursuit of Happiness."
+        ),
+        "est_full_duration_sec": 180,
+    }
+    for mode in ("30", "45"):
+        result = mock_teleprompter(speech, mode)
+        joined = " ".join(result["lines"]).strip()
+        assert joined
+        assert joined[-1] in ".!?"
+        for line in result["lines"]:
+            assert line.strip()[-1] in ".!?"
+
+
 def test_empty_delivery_on_timer_silence():
     raw = presage_speaking_judge(
         transcript="",

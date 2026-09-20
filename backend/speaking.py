@@ -24,6 +24,7 @@ Given a historical speech excerpt, a duration mode, and a target speaking time, 
 Rules:
 - Preserve the speaker's voice and wording from the excerpt; do not invent new content.
 - For short timed modes (30s or 45s), pick only the most iconic lines that fit the word budget — never exceed it.
+- Timed excerpts must end on complete sentences (terminal . ! or ?); never cut mid-sentence.
 - For "full" mode, include the entire excerpt split into scroll-friendly chunks (~1–2 sentences per line).
 - No commentary addressed to the user; lines are only what the speaker would read aloud.
 - estimated_sec should reflect a natural pace near 2.5 words per second."""
@@ -41,6 +42,64 @@ def _join_words(words: list[str], count: int) -> str:
     if count <= 0 or not words:
         return ""
     return " ".join(words[:count])
+
+
+def _ensure_sentence_terminal(sentence: str) -> str:
+    s = (sentence or "").strip()
+    if not s:
+        return s
+    if s[-1] not in ".!?":
+        return f"{s}."
+    return s
+
+
+def _split_sentences(text: str) -> list[str]:
+    stripped = (text or "").strip()
+    if not stripped:
+        return []
+    sentences: list[str] = []
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", stripped) if p.strip()]
+    for para in paragraphs:
+        parts = re.split(r"(?<=[.!?])\s+", para)
+        if len(parts) == 1 and parts[0] == para and not re.search(r"[.!?]", para):
+            sentences.append(_ensure_sentence_terminal(para))
+            continue
+        for part in parts:
+            part = part.strip()
+            if part:
+                sentences.append(_ensure_sentence_terminal(part))
+    return sentences
+
+
+def _sentences_within_word_budget(text: str, budget: int) -> list[str]:
+    """Take opening sentences from text without exceeding word budget; never partial sentences."""
+    if budget <= 0:
+        return []
+    sentences = _split_sentences(text)
+    if sentences:
+        selected: list[str] = []
+        used = 0
+        for sent in sentences:
+            wc = len(_excerpt_words(sent))
+            if wc <= 0:
+                continue
+            if selected and used + wc > budget:
+                break
+            if not selected and wc > budget:
+                selected.append(sent)
+                break
+            selected.append(sent)
+            used += wc
+            if used >= budget:
+                break
+        return selected
+
+    words = _excerpt_words(text)
+    if not words:
+        return []
+    if len(words) <= budget:
+        return [_ensure_sentence_terminal(_join_words(words, len(words)))]
+    return [_ensure_sentence_terminal(_join_words(words, budget))]
 
 
 def _chunk_full_excerpt(text: str) -> list[str]:
@@ -86,23 +145,12 @@ def word_budget_for_mode(duration_mode: DurationMode, est_full_duration_sec: int
 def enforce_word_budget(lines: list[str], budget: int) -> list[str]:
     if budget <= 0 or not lines:
         return lines
-    out: list[str] = []
-    used = 0
-    for line in lines:
-        words = _excerpt_words(line)
-        if not words:
-            continue
-        if used >= budget:
-            break
-        remaining = budget - used
-        if len(words) <= remaining:
-            out.append(line)
-            used += len(words)
-        else:
-            out.append(_join_words(words, remaining))
-            used = budget
-            break
-    return out if out else [_join_words(_excerpt_words(lines[0]), min(budget, len(_excerpt_words(lines[0]))))]
+    combined = " ".join(str(ln).strip() for ln in lines if str(ln).strip())
+    sentences = _sentences_within_word_budget(combined, budget)
+    if not sentences:
+        return lines
+    chunked = _chunk_full_excerpt(" ".join(sentences))
+    return chunked if chunked else sentences
 
 
 def _cap_timed_teleprompter(result: dict[str, Any], duration_mode: DurationMode, est_full: int) -> dict[str, Any]:
@@ -140,7 +188,8 @@ def mock_teleprompter(speech: dict[str, Any], duration_mode: DurationMode) -> di
         }
 
     budget = word_budget_for_mode(duration_mode, est_full) or 75
-    slice_text = _join_words(words, budget)
+    sentences = _sentences_within_word_budget(excerpt, budget)
+    slice_text = " ".join(sentences)
     lines = _chunk_full_excerpt(slice_text) if slice_text else []
     if not lines and slice_text:
         lines = [slice_text]

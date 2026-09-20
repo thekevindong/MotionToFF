@@ -1218,6 +1218,21 @@
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
+.prep-speech-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.prep-speech-file-name {
+  font-size: 0.82rem;
+  color: var(--ink-muted, rgba(20, 18, 14, 0.65));
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .prep-panel-sub {
   margin: 0 auto 20px;
