@@ -185,6 +185,8 @@ Or from repo root: `npm run dev` (after `npm install` in `frontend/` once).
 
 Checks: `GET /health`, `GET /debug/presage`, `npm run build` in `frontend/`.
 
+**After `git pull`:** run `pip install -r requirements.txt` again in `backend/` (new deps include `httpx` for voice routes). If uvicorn fails with `ModuleNotFoundError: No module named 'httpx'`, that reinstall fixes it.
+
 ### Smoke checklist (manual)
 
 1. Zero keys: full path; Results transcript from API turns (not static copy).  

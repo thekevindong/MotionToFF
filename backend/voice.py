@@ -79,7 +79,7 @@ async def text_to_speech(body: TtsRequest) -> Response:
             headers={
                 "xi-api-key": api_key,
                 "Content-Type": "application/json",
-                Accept: "audio/mpeg",
+                "Accept": "audio/mpeg",
             },
             json={
                 "text": text,
