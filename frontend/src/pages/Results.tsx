@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Navigate } from '../App'
-import { getSession, getSessionReport } from '../lib/api'
+import { getSession as fetchSession, getSessionReport } from '../lib/api'
 import type { SessionTurn } from '../lib/api-types'
 import {
   applyPresageScoresToTurns,
@@ -45,7 +45,7 @@ export default function Results({ navigate }: { navigate: Navigate }) {
     const sessionId = summary?.sessionId ?? getStoredSessionId()
 
     const load = async () => {
-      const data = sessionId ? await getSessionReport(sessionId) : await getSession()
+      const data = sessionId ? await getSessionReport(sessionId) : await fetchSession()
       if (cancelled) return
       const turns = applyPresageScoresToTurns(data.turns ?? [])
       setState({
