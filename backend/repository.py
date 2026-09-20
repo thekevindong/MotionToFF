@@ -110,6 +110,28 @@ def get_session_row(session_id: str) -> dict[str, Any] | None:
     return dict(row)
 
 
+def get_session_settings(session_id: str) -> dict[str, Any]:
+    row = get_session_row(session_id)
+    if not row:
+        return {}
+    raw = row.get("settings_json") or "{}"
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def set_session_setting(session_id: str, key: str, value: Any) -> None:
+    settings = get_session_settings(session_id)
+    settings[key] = value
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET settings_json = ? WHERE id = ?",
+            (json.dumps(settings), session_id),
+        )
+
+
 def session_exists(session_id: str) -> bool:
     return get_session_row(session_id) is not None
 

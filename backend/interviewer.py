@@ -18,8 +18,12 @@ MOCK_QUESTIONS = [
     "Where do you see the biggest gap in your experience for this position?",
 ]
 
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+# Interactions API (recommended over legacy generateContent). See:
+# https://ai.google.dev/gemini-api/docs/interactions-overview
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+INTERACTIONS_API_REVISION = "2026-05-20"
+SETTINGS_INTERACTION_ID_KEY = "gemini_last_interaction_id"
 
 History = list[dict[str, Any]]
 
@@ -29,6 +33,13 @@ Stay concise (one or two sentences). Do not repeat a question already asked in t
 If the conversation is empty, open with a strong first interview question."""
 
 CONTEXT_MAX_CHARS = 8000
+
+FIRST_TURN_INPUT = (
+    "The candidate has joined the call. Ask your first interview question now."
+)
+FOLLOWUP_SUFFIX = (
+    "\n\nAsk the next interview question only — one clear question, no feedback or preamble."
+)
 
 
 def build_interviewer_context(session_id: str | None) -> str:
@@ -71,86 +82,130 @@ def _mock_next_turn(history: History) -> dict[str, str]:
     return {"role": "interviewer", "text": question}
 
 
-def _history_to_contents(history: History) -> list[dict[str, Any]]:
-    contents: list[dict[str, Any]] = []
+def _system_instruction(session_id: str | None) -> str:
+    context = build_interviewer_context(session_id)
+    if not context:
+        return SYSTEM_INSTRUCTION
+    return f"{SYSTEM_INSTRUCTION}\n\n{context}"
+
+
+def _history_as_recovery_input(history: History) -> str:
+    """Rebuild prompt when server-side interaction state was lost (e.g. old session)."""
+    lines: list[str] = []
     for entry in history:
         role = entry.get("role")
         text = str(entry.get("text", "")).strip()
         if not text:
             continue
-        if role == "interviewer":
-            contents.append({"role": "model", "parts": [{"text": text}]})
-        elif role == "candidate":
-            contents.append({"role": "user", "parts": [{"text": text}]})
-    return contents
+        label = "Interviewer" if role == "interviewer" else "Candidate"
+        lines.append(f"{label}: {text}")
+    lines.append(
+        "Interviewer: (ask the next interview question now — one question only)"
+    )
+    return "\n".join(lines)
 
 
-def _extract_question_text(payload: dict[str, Any]) -> str:
-    candidates = payload.get("candidates") or []
-    if not candidates:
-        raise ValueError("Gemini returned no candidates")
-    content = candidates[0].get("content") or {}
-    parts = content.get("parts") or []
-    text_parts = [str(p.get("text", "")).strip() for p in parts if p.get("text")]
-    text = "\n".join(t for t in text_parts if t).strip()
-    if not text:
-        raise ValueError("Gemini returned empty text")
-    return text
+def _latest_candidate_answer(history: History) -> str:
+    for entry in reversed(history):
+        if entry.get("role") == "candidate":
+            text = str(entry.get("text", "")).strip()
+            if text:
+                return text
+    return ""
+
+
+def _extract_interaction_text(payload: dict[str, Any]) -> str:
+    direct = payload.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    steps = payload.get("steps") or []
+    for step in reversed(steps):
+        if not isinstance(step, dict):
+            continue
+        content = step.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            if parts:
+                return "\n".join(parts).strip()
+
+    raise ValueError("Gemini interaction returned no text")
+
+
+def _create_interaction(body: dict[str, Any], api_key: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        INTERACTIONS_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+            "Api-Revision": INTERACTIONS_API_REVISION,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini Interactions HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Gemini Interactions request failed: {exc.reason}") from exc
+
+
+def _persist_interaction_id(session_id: str | None, interaction_id: str | None) -> None:
+    if not session_id or not interaction_id:
+        return
+    from repository import set_session_setting
+
+    set_session_setting(session_id, SETTINGS_INTERACTION_ID_KEY, interaction_id)
 
 
 def _gemini_next_turn(
     history: History, api_key: str, session_id: str | None = None
 ) -> dict[str, str]:
+    from repository import get_session_settings
+
     model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
-    url = f"{GEMINI_API_BASE}/models/{model}:generateContent?key={api_key}"
+    previous_id: str | None = None
+    if session_id:
+        raw = get_session_settings(session_id).get(SETTINGS_INTERACTION_ID_KEY)
+        if isinstance(raw, str) and raw.strip():
+            previous_id = raw.strip()
 
-    context = build_interviewer_context(session_id)
-    system_text = SYSTEM_INSTRUCTION
-    if context:
-        system_text = f"{SYSTEM_INSTRUCTION}\n\n{context}"
-
-    contents = _history_to_contents(history)
-    if not contents:
-        contents = [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": (
-                            "The candidate has joined the call. "
-                            "Ask your first interview question now."
-                        )
-                    }
-                ],
-            }
-        ]
-
-    body = {
-        "systemInstruction": {"parts": [{"text": system_text}]},
-        "contents": contents,
-        "generationConfig": {
-            "temperature": 0.75,
-            "maxOutputTokens": 256,
-        },
+    body: dict[str, Any] = {
+        "model": model,
+        "generation_config": {"max_output_tokens": 256},
     }
 
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    if not history:
+        body["system_instruction"] = _system_instruction(session_id)
+        body["input"] = FIRST_TURN_INPUT
+    elif previous_id:
+        answer = _latest_candidate_answer(history)
+        if not answer:
+            raise ValueError("Turn history missing candidate answer")
+        body["input"] = f"{answer}{FOLLOWUP_SUFFIX}"
+        body["previous_interaction_id"] = previous_id
+    else:
+        # No stored interaction (legacy session / mock fallback earlier) — start a new chain.
+        body["system_instruction"] = _system_instruction(session_id)
+        body["input"] = _history_as_recovery_input(history)
 
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Gemini request failed: {exc.reason}") from exc
+    payload = _create_interaction(body, api_key)
+    interaction_id = payload.get("id")
+    if isinstance(interaction_id, str):
+        _persist_interaction_id(session_id, interaction_id)
 
-    question = _extract_question_text(payload)
+    question = _extract_interaction_text(payload)
     return {"role": "interviewer", "text": question}
 
 
