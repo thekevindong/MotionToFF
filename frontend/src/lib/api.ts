@@ -16,6 +16,11 @@ import type {
   SpeakingPrepareResponse,
   SpeakingCompleteInput,
   SpeakingCompleteResponse,
+  ThesisPackId,
+  ThesisPrepareResponse,
+  ThesisPresentationCompleteInput,
+  ThesisPresentationCompleteResponse,
+  ThesisQaStartResponse,
 } from './api-types'
 
 const API_BASE =
@@ -153,6 +158,55 @@ export async function postSpeakingPrepare(
   return res.json()
 }
 
+export async function postThesisPrepare(
+  sessionId: string,
+  body: { thesisPack: ThesisPackId },
+): Promise<ThesisPrepareResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/thesis/prepare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ thesis_pack: body.thesisPack }),
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function postThesisPresentationComplete(
+  sessionId: string,
+  body: ThesisPresentationCompleteInput,
+): Promise<ThesisPresentationCompleteResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/thesis/presentation/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      transcript: body.transcript,
+      elapsed_sec: body.elapsedSec,
+      finished_in_time: body.finishedInTime,
+      ended_by: body.endedBy,
+      samples: body.samples,
+      summary: body.summary,
+      skip_qa: body.skipQa,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function postThesisQaStart(sessionId: string): Promise<ThesisQaStartResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/thesis/qa/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
 export async function getSession(sessionId?: string): Promise<SessionResponse> {
   const path = sessionId ? `/sessions/${sessionId}` : '/session'
   const res = await fetch(`${API_BASE}${path}`)
@@ -171,12 +225,23 @@ export async function getSessionReport(sessionId: string): Promise<SessionRespon
   return res.json()
 }
 
-export async function postTurn(answer: string, sessionId?: string): Promise<TurnResponse> {
+export async function postTurn(
+  answer: string,
+  sessionId?: string,
+  options?: { qaTimeRemainingSec?: number; qaExpired?: boolean },
+): Promise<TurnResponse> {
   const path = sessionId ? `/sessions/${sessionId}/turn` : '/turn'
+  const payload: Record<string, unknown> = { answer: answer.trim() }
+  if (typeof options?.qaTimeRemainingSec === 'number') {
+    payload.qa_time_remaining_sec = options.qaTimeRemainingSec
+  }
+  if (options?.qaExpired) {
+    payload.qa_expired = true
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answer: answer.trim() }),
+    body: JSON.stringify(payload),
   })
   if (!res.ok) {
     throw new Error(await parseError(res))

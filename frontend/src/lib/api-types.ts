@@ -46,10 +46,37 @@ export type SessionDocument = {
   created_at: string
 }
 
+export type ThesisPackId = 'short' | 'long'
+
+export type ThesisPrepareResponse = {
+  thesis_pack: ThesisPackId
+  presentation_duration_sec: number
+  qa_duration_sec: number
+  character_id: string
+  defense_document_id: string
+  defense_filename: string
+  defense_text_preview: string
+  thesis_phase?: 'presentation' | 'qa' | 'done'
+  source?: string
+}
+
+export type ThesisQaStartResponse = {
+  question: InterviewerLine
+  end_session: boolean
+}
+
 export type SessionPersonaSettings = {
   scenario_id?: string
   character_id?: string
   session_duration_sec?: number
+  thesis_pack?: ThesisPackId
+  presentation_duration_sec?: number
+  qa_duration_sec?: number
+  defense_document_id?: string
+  defense_filename?: string
+  defense_text_preview?: string
+  thesis_phase?: 'presentation' | 'qa' | 'done'
+  skipped_qa?: boolean
   speech_id?: string
   speech_title?: string
   speaker?: string
@@ -59,6 +86,11 @@ export type SessionPersonaSettings = {
   teleprompter_prepared_at?: string
   finished_in_time?: boolean
   delivery_stats?: {
+    elapsed_sec?: number
+    ended_by?: string
+    summary?: SpeakingDeliverySummary
+  }
+  presentation_stats?: {
     elapsed_sec?: number
     ended_by?: string
     summary?: SpeakingDeliverySummary
@@ -122,8 +154,36 @@ export type SpeakingCompleteResponse = {
   end_session: boolean
 }
 
+export type ThesisPresentationCompleteInput = {
+  transcript: string
+  elapsedSec: number
+  finishedInTime: boolean
+  endedBy: 'timer' | 'user' | 'early_exit'
+  samples: SpeakingDeliverySample[]
+  summary: SpeakingDeliverySummary | null
+  skipQa: boolean
+}
+
+export type ThesisPresentationCompleteResponse = {
+  ok: boolean
+  end_session: boolean
+  skip_qa: boolean
+  committee_character_id?: string
+  qa_duration_sec?: number
+  handoff_line?: string
+}
+
+export type ThesisReportDetail = {
+  presentation?: Record<string, number>
+  qa?: Record<string, number> | null
+  skipped_qa?: boolean
+  committee_character_id?: string
+  defense_coverage?: number
+}
+
 export type SessionReportPayload = {
   rubric?: RubricScores
+  thesis?: ThesisReportDetail
   per_turn?: Array<{ turn: number } & RubricScores>
   mock?: boolean
   source?: 'nemotron' | 'gemini' | 'presage' | 'presage_fallback' | 'mock' | string

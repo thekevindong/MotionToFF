@@ -410,6 +410,11 @@ def score_session(session_id: str) -> dict[str, Any]:
 
         return score_speaking_session(session_id)
 
+    if settings.get("scenario_id") == "thesis":
+        from thesis import score_thesis_session
+
+        return score_thesis_session(session_id)
+
     turns = get_turns(session_id)
     if not turns:
         return {

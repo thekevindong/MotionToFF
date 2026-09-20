@@ -30,7 +30,10 @@ const RED_FLAG_LABELS: Record<string, string> = {
   low_composure_on_turn: 'Low composure on this turn',
   empty_or_too_short: 'Answer was empty or too short',
   empty_delivery: 'No spoken delivery captured',
+  empty_presentation: 'No presentation transcript captured',
+  low_defense_coverage: 'Low coverage of your defense file',
   missed_time_budget: 'Did not finish within the timed window',
+  no_qa_turns: 'No Q&A answers recorded',
   low_teleprompter_coverage: 'Low teleprompter coverage',
   high_filler_rate: 'High filler word rate',
   low_composure_delivery: 'Composure dropped during delivery',
@@ -107,7 +110,13 @@ export function applyPresageScoresToTurns(turns: SessionTurn[]): SessionTurn[] {
   })
 }
 
-export function computeOverallScore(turns: SessionTurn[]): number | null {
+export function computeOverallScore(
+  turns: SessionTurn[],
+  sessionReport?: SessionReportPayload,
+): number | null {
+  if (typeof sessionReport?.rubric?.overall === 'number') {
+    return toPercent(sessionReport.rubric.overall)
+  }
   if (turns.length === 0) return null
   return toPercent(avg(turns, (t) => t.scores.overall))
 }
@@ -184,12 +193,81 @@ export function buildSpeakingMetrics(
   ]
 }
 
+export function buildThesisMetrics(
+  turns: SessionTurn[],
+  sessionReport?: SessionReportPayload,
+  settings?: SessionPersonaSettings,
+): ReportMetric[] {
+  const thesis = sessionReport?.thesis
+  const rubric = sessionReport?.rubric
+  const presentation = thesis?.presentation
+  const qa = thesis?.qa
+  const skippedQa = Boolean(thesis?.skipped_qa ?? settings?.skipped_qa)
+  const coveragePct = toPercent(
+    thesis?.defense_coverage ?? rubric?.teleprompter_coverage ?? rubric?.message_fit ?? 0.5,
+  )
+  const presTurn = turns[0]
+  const composurePct = toPercent(presTurn?.composure ?? avg(turns, (t) => t.composure))
+
+  const metrics: ReportMetric[] = [
+    {
+      label: 'Presentation structure',
+      value: toPercent(presentation?.structure ?? rubric?.structure ?? 0.5),
+      note: 'How clearly you organized the defense material in your own words.',
+    },
+    {
+      label: 'Clarity',
+      value: toPercent(presentation?.clarity ?? rubric?.specificity ?? 0.5),
+      note: 'Whether the committee could follow your claims without reading the file.',
+    },
+    {
+      label: 'Defense coverage',
+      value: coveragePct,
+      note:
+        coveragePct >= 65
+          ? 'You hit many of the key terms and claims from your upload.'
+          : 'Re-run and anchor your talk to more specifics from the defense text.',
+    },
+    {
+      label: 'Composure (presentation)',
+      value: composurePct,
+      note: composurePct >= 70 ? 'Steady on camera during the timed talk.' : 'Pause at transitions to reset composure.',
+    },
+    {
+      label: 'Time use',
+      value: toPercent(presentation?.time_use ?? (settings?.finished_in_time ? 0.72 : 0.45)),
+      note: settings?.finished_in_time
+        ? 'Finished inside the presentation window.'
+        : 'Use the full countdown or finish cleanly before time runs out.',
+    },
+  ]
+
+  if (!skippedQa && qa) {
+    metrics.push(
+      {
+        label: 'Q&A depth',
+        value: toPercent(qa.depth ?? qa.overall ?? 0.5),
+        note: 'How substantively you defended claims under questioning.',
+      },
+      {
+        label: 'Q&A specificity',
+        value: toPercent(qa.specificity ?? 0.5),
+        note: 'Answers grounded in your uploaded defense text.',
+      },
+    )
+  }
+  return metrics
+}
+
 export function buildMetrics(
   turns: SessionTurn[],
   options?: { scenarioId?: string; sessionReport?: SessionReportPayload; settings?: SessionPersonaSettings },
 ): ReportMetric[] {
   if (options?.scenarioId === 'speaking') {
     return buildSpeakingMetrics(turns, options.sessionReport, options.settings)
+  }
+  if (options?.scenarioId === 'thesis') {
+    return buildThesisMetrics(turns, options.sessionReport, options.settings)
   }
   if (turns.length === 0) return []
 

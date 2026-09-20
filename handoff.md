@@ -3,7 +3,7 @@
 Use this file when starting a **new chat** or onboarding a teammate. SteelHacks XIII: practice interviews with **composure-aware** feedback (Presage + Nemotron judge/director + Gemini interviewer + ElevenLabs voice).
 
 **Remote:** [github.com/thekevindong/MotionToFF](https://github.com/thekevindong/MotionToFF.git)  
-**Integration checklist (done):** [plan.md](plan.md) · **Presage:** [docs/presage-step5.md](docs/presage-step5.md)
+**Integration checklist (done):** [plan.md](plan.md) (Phases 0–8, including thesis) · **Presage:** [docs/presage-step5.md](docs/presage-step5.md)
 
 ---
 
@@ -37,7 +37,7 @@ Stack: FastAPI :8000, Vite frontend :5173 in frontend/. Demo works on zero keys.
 
 Done: SpeakUp UI integrated; SQLite sessions + document upload; /turn orchestration; studio voice loop + expressions; live Presage pane; Results from API; STT/TTS on backend.
 
-Next: wire sidecar to real SmartSpectra SDK (after smoke), production deploy, enable locked scenario modes when prompts exist.
+Next: wire sidecar to real SmartSpectra SDK (after smoke), production deploy, enable Mock Interview when prompts exist.
 
 Gemini prompts: backend/interviewer.py only. Do not grep node_modules or .venv. Never commit .env or backend/data/.
 ```
@@ -53,6 +53,7 @@ backend/
   documents.py       PDF/DOCX/TXT text extraction
   interviewer.py     Gemini + build_interviewer_context(session_id); persona from settings_json
   judge.py           Nemotron rubric
+  thesis.py          Thesis Defense prepare / presentation / Q&A / presage judge
   director.py        Nemotron session control
   nemotron_client.py Shared NIM client
   composure.py       Presage seam → sample_composure(); sidecar probe + vitals proxy
@@ -62,7 +63,7 @@ backend/
   .env               See .env.example
 
 frontend/            Vite 8 + React 19 (SpeakUp design)
-  src/pages/         Home.tsx, Setup.tsx (studio), Results.tsx
+  src/pages/         Home.tsx, Setup.tsx (studio), ThesisLive.tsx, SpeakingLive.tsx, Results.tsx
   src/hooks/         use-interview-machine, media, composure, character expression
   src/lib/           api.ts, report-data.ts, session-storage.ts
   src/config/        modes.ts, character-expressions.ts
@@ -116,7 +117,10 @@ Nemotron never returns user-facing dialogue. Gemini does not own rubric or direc
 | POST | `/sessions` | Create session; body `{ job_title?, scenario_id?, character_id? }` optional |
 | GET | `/sessions/{id}` | `{ session_id, job_title, current_question, turns, documents, settings }` |
 | POST | `/sessions/{id}/documents` | Multipart `file` (pdf, docx, txt) |
-| POST | `/sessions/{id}/turn` | Body `{ "answer" }` → scores, decision, next_question |
+| POST | `/sessions/{id}/turn` | Body `{ "answer" }` → scores, decision, next_question; thesis Q&A may send `qa_time_remaining_sec` / `qa_expired` |
+| POST | `/sessions/{id}/thesis/prepare` | Body `{ "thesis_pack": "short" \| "long" }` — validates one `.txt` defense, picks committee character, stores pack timers |
+| POST | `/sessions/{id}/thesis/presentation/complete` | Body transcript, timing, `skip_qa` — presentation turn + optional end session |
+| POST | `/sessions/{id}/thesis/qa/start` | First committee question after presentation (`next_turn` seam) |
 | POST | `/sessions/{id}/interject` | Body `{ "trigger", "snapshot" }` → short in-character line (rate-limited; not a full turn) |
 | GET | `/sessions/{id}/report` | Same payload as GET session |
 | POST | `/api/stt` | Speech-to-text (ElevenLabs) |
@@ -150,7 +154,7 @@ Turn record fields: `turn`, `question`, `answer`, `scores`, `composure`, `decisi
 
 **Aliases:** `/setup`, `/interview` → studio; `/report` → results.
 
-Locked scenarios (Mock Interview, Public Speaking, Thesis Defense) stay disabled until backend prompts exist.
+**Thesis Defense** and **Public Speaking** are selectable on `/start`. **Mock Interview** stays locked (`modes.ts` `ready: false`) until prompts exist.
 
 ---
 
@@ -198,13 +202,14 @@ Checks: `GET /health`, `GET /debug/presage`, `npm run build` in `frontend/`.
 ### Smoke checklist (manual)
 
 1. Zero keys: full path; Results transcript from API turns (not static copy).  
-2. Locked modes not selectable.  
+2. Mock Interview locked; salary, speaking, and thesis selectable.  
 3. **Leave** mid-session stops media tracks.  
 4. Refresh on `/results` with same `session_id` reloads report.  
 5. `/diag` TTS + mic test.  
 6. No CORS errors from `:5173` → `:8000`.  
 7. With keys: persona tone, ElevenLabs STT/TTS as expected.  
-8. Brand, character posters, expression PNGs return 200 (under `frontend/public/`).
+8. Brand, character posters, expression PNGs return 200 (under `frontend/public/`).  
+9. Thesis Defense: one `.txt` → short pack → presentation (optional **Skip Q&A**) → Results shows presentation scores.
 
 ### Public Speaking QA matrix (Phase 8)
 
@@ -219,6 +224,23 @@ Checks: `GET /health`, `GET /debug/presage`, `npm run build` in `frontend/`.
 | Camera off during delivery | Wobble mock samples still drive auditorium reactions; Presage pane shows **degraded · camera off**; report notes degraded heuristics when flagged |
 
 Automated checks: `cd backend && python -m pytest test_speaking_qa.py -q`.
+
+### Thesis Defense QA matrix (Phase 8)
+
+| Case | Expected behavior |
+|------|-------------------|
+| No `.txt` / empty defense text | `POST .../thesis/prepare` → `thesis_requires_txt` or `thesis_defense_text_empty`; **Start session** blocked until one valid `.txt` is chosen |
+| PDF (or non-`.txt`) in thesis prep | UI rejects before upload; API prepare still requires exactly one `.txt` (`thesis_requires_txt` if bypassed) |
+| No `GEMINI_API_KEY` | `mock_thesis_questions` + `presage_thesis_judge` report (`source: presage`, `mock: true`); full prep → live → results |
+| No mic / camera permission | Block **Start presentation** / Q&A with “Microphone and camera access are required.” (same as salary) |
+| **Skip Q&A** after presentation | Report presentation rubric only; `skipped_qa: true`; no Q&A section in Results |
+| Presentation timer expires with silence | Empty transcript submitted; report `red_flags` includes `empty_presentation` |
+| Q&A timer expires while **listening** | Auto-submit current browser transcript via `POST /turn` with `qa_expired: true`; server sets `qa_ended_by: timer` and closing question |
+| Q&A timer expires while **ASKING** | Finish interviewer TTS, then navigate to results (no new turn) |
+| Refresh on `/start/live` mid-presentation | v1 **restart presentation**: prep restored from `GET /sessions/{id}`; user taps **Start presentation** again (see `restartNote` in Setup) |
+| Committee character | Server picks uniformly from `recruiter` / `manager` / `hr` at prepare; stable if prepare is called again on the same session |
+
+Automated checks: `cd backend && python -m pytest test_thesis_qa.py -q`.
 
 ---
 

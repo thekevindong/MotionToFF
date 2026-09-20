@@ -1,4 +1,5 @@
 import type { SpeakingDurationId } from '../config/speaking-duration'
+import type { ThesisPackId } from '../config/thesis-duration'
 
 const PREP_COMPLETE_KEY = 'speakup_prep_complete'
 const PREP_DEFAULTS_KEY = 'speakup_prep_defaults'
@@ -9,6 +10,7 @@ export type PrepDefaults = {
   sessionDurationSec?: number
   speechId?: string
   speakingDurationId?: SpeakingDurationId
+  thesisPackId?: ThesisPackId
 }
 
 export function readPrepDefaults(): Partial<PrepDefaults> {

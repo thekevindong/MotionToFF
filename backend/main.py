@@ -87,6 +87,15 @@ from repository import (
 
 from speaking import build_teleprompter, speech_from_custom_excerpt
 
+from thesis import (
+    ALLOWED_THESIS_SESSION_DURATION_SEC,
+    ThesisValidationError,
+    gemini_handoff_line,
+    thesis_prepare,
+    thesis_presentation_complete,
+    thesis_qa_start,
+)
+
 
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
@@ -263,6 +272,14 @@ def _session_payload(session_id: str) -> dict[str, Any]:
             "scenario_id",
             "character_id",
             "session_duration_sec",
+            "thesis_pack",
+            "presentation_duration_sec",
+            "qa_duration_sec",
+            "defense_document_id",
+            "defense_filename",
+            "defense_text_preview",
+            "thesis_phase",
+            "skipped_qa",
             "speech_id",
             "speech_title",
             "speaker",
@@ -315,6 +332,8 @@ class CreateSessionRequest(BaseModel):
 class TurnRequest(BaseModel):
 
     answer: str = Field(..., min_length=1)
+    qa_time_remaining_sec: int | None = None
+    qa_expired: bool | None = None
 
 
 class InterjectRequest(BaseModel):
@@ -409,6 +428,48 @@ class SpeakingCompleteResponse(BaseModel):
     end_session: bool = True
 
 
+class ThesisPrepareRequest(BaseModel):
+    thesis_pack: str
+
+
+class ThesisPrepareResponse(BaseModel):
+    thesis_pack: str
+    presentation_duration_sec: int
+    qa_duration_sec: int
+    character_id: str
+    defense_document_id: str
+    defense_filename: str
+    defense_text_preview: str
+
+
+class ThesisPresentationCompleteRequest(BaseModel):
+    transcript: str = ""
+    elapsed_sec: int = 0
+    finished_in_time: bool = False
+    ended_by: str = "user"
+    samples: list[SpeakingDeliverySample] = Field(default_factory=list)
+    summary: SpeakingDeliverySummary | None = None
+    skip_qa: bool = False
+
+
+class ThesisPresentationCompleteResponse(BaseModel):
+    ok: bool = True
+    end_session: bool = False
+    skip_qa: bool = False
+    committee_character_id: str | None = None
+    qa_duration_sec: int | None = None
+    handoff_line: str | None = None
+
+
+class ThesisQaStartResponse(BaseModel):
+    question: dict[str, Any]
+    end_session: bool = False
+
+
+def _raise_thesis_validation(exc: ThesisValidationError) -> None:
+    raise HTTPException(status_code=400, detail=exc.code) from exc
+
+
 @app.post("/sessions")
 
 def post_sessions(body: CreateSessionRequest = CreateSessionRequest()):
@@ -423,11 +484,12 @@ def post_sessions(body: CreateSessionRequest = CreateSessionRequest()):
 
     duration_sec = body.session_duration_sec
     if duration_sec is not None:
-        allowed = (
-            ALLOWED_SPEAKING_SESSION_DURATION_SEC
-            if scenario_id == "speaking"
-            else ALLOWED_SESSION_DURATION_SEC
-        )
+        if scenario_id == "speaking":
+            allowed = ALLOWED_SPEAKING_SESSION_DURATION_SEC
+        elif scenario_id == "thesis":
+            allowed = ALLOWED_THESIS_SESSION_DURATION_SEC
+        else:
+            allowed = ALLOWED_SESSION_DURATION_SEC
         if duration_sec not in allowed:
             raise HTTPException(status_code=400, detail="invalid_session_duration")
 
@@ -578,6 +640,83 @@ async def post_speaking_complete(session_id: str, body: SpeakingCompleteRequest)
     return SpeakingCompleteResponse(ok=True, end_session=True)
 
 
+@app.post("/sessions/{session_id}/thesis/prepare", response_model=ThesisPrepareResponse)
+def post_thesis_prepare(session_id: str, body: ThesisPrepareRequest):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    settings = get_session_settings(session_id)
+    if settings.get("scenario_id") != "thesis":
+        raise HTTPException(status_code=400, detail="not_thesis_session")
+
+    try:
+        payload = thesis_prepare(session_id, body.thesis_pack)
+    except ThesisValidationError as exc:
+        _raise_thesis_validation(exc)
+
+    return ThesisPrepareResponse(**payload)
+
+
+@app.post(
+    "/sessions/{session_id}/thesis/presentation/complete",
+    response_model=ThesisPresentationCompleteResponse,
+)
+async def post_thesis_presentation_complete(
+    session_id: str, body: ThesisPresentationCompleteRequest
+):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    settings = get_session_settings(session_id)
+    if settings.get("scenario_id") != "thesis":
+        raise HTTPException(status_code=400, detail="not_thesis_session")
+
+    transcript = body.transcript.strip()
+    summary = body.summary.model_dump() if body.summary else {}
+    avg_composure = summary.get("avg_composure")
+    if isinstance(avg_composure, (int, float)):
+        composure_value = float(avg_composure)
+    else:
+        composure_value = await asyncio.to_thread(sample_composure, transcript or " ")
+
+    scores = pending_turn_scores(composure_value)
+    try:
+        result = thesis_presentation_complete(
+            session_id,
+            transcript=transcript,
+            elapsed_sec=body.elapsed_sec,
+            finished_in_time=body.finished_in_time,
+            ended_by=body.ended_by,
+            samples=[s.model_dump() for s in body.samples],
+            summary=summary,
+            composure_value=composure_value,
+            skip_qa=body.skip_qa,
+            scores=scores,
+        )
+    except ThesisValidationError as exc:
+        _raise_thesis_validation(exc)
+
+    if not result.get("skip_qa") and not result.get("end_session"):
+        handoff = await asyncio.to_thread(gemini_handoff_line, session_id, transcript)
+        result = {**result, "handoff_line": handoff}
+
+    return ThesisPresentationCompleteResponse(**result)
+
+
+@app.post("/sessions/{session_id}/thesis/qa/start", response_model=ThesisQaStartResponse)
+def post_thesis_qa_start(session_id: str):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
+    settings = get_session_settings(session_id)
+    if settings.get("scenario_id") != "thesis":
+        raise HTTPException(status_code=400, detail="not_thesis_session")
+    try:
+        payload = thesis_qa_start(session_id)
+    except ThesisValidationError as exc:
+        _raise_thesis_validation(exc)
+    return ThesisQaStartResponse(**payload)
+
+
 def _report_cache_valid(cached: dict[str, Any], turn_count: int) -> bool:
     if not isinstance(cached.get("rubric"), dict):
         return False
@@ -605,6 +744,11 @@ def _get_or_build_session_report(session_id: str) -> dict[str, Any]:
             from speaking import score_speaking_session
 
             report = score_speaking_session(session_id)
+            report = {**report, "fallback": True, "source": "presage_fallback"}
+        elif settings.get("scenario_id") == "thesis":
+            from thesis import score_thesis_session
+
+            report = score_thesis_session(session_id)
             report = {**report, "fallback": True, "source": "presage_fallback"}
         else:
             report = presage_session_report(get_turns(session_id), fallback=True)
@@ -674,7 +818,7 @@ async def post_session_document(session_id: str, file: UploadFile = File(...)):
 
 
 
-async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
+async def _execute_turn(session_id: str, body: TurnRequest) -> dict[str, Any]:
 
     if not session_exists(session_id):
 
@@ -682,7 +826,7 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
 
 
 
-    answer = answer.strip()
+    answer = body.answer.strip()
 
     records = get_turns(session_id)
 
@@ -702,16 +846,36 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
 
     composure_value = await asyncio.to_thread(sample_composure, answer)
     decision = decide(composure_value, turn_history)
-    next_question = await asyncio.to_thread(
-        next_turn,
-        turn_history,
-        session_id,
-        delivery_context={
-            "composure": composure_value,
-            "director_action": decision.get("action"),
-            "director_rationale": decision.get("rationale"),
-        },
+    settings = get_session_settings(session_id)
+    qa_time_up = bool(body.qa_expired) or (
+        body.qa_time_remaining_sec is not None and body.qa_time_remaining_sec <= 0
     )
+    if settings.get("scenario_id") == "thesis" and qa_time_up:
+        closing = generate_session_closing(
+            session_id,
+            elapsed_sec=body.qa_time_remaining_sec,
+            duration_sec=settings.get("qa_duration_sec"),
+        )
+        closing_text = str(closing.get("text", "")).strip() or (
+            "Thank you — that concludes our questions. You can review your report when you're ready."
+        )
+        next_question = {
+            "role": "interviewer",
+            "text": closing_text,
+            "end_session": True,
+        }
+        set_session_setting(session_id, "qa_ended_by", "timer")
+    else:
+        next_question = await asyncio.to_thread(
+            next_turn,
+            turn_history,
+            session_id,
+            delivery_context={
+                "composure": composure_value,
+                "director_action": decision.get("action"),
+                "director_rationale": decision.get("rationale"),
+            },
+        )
     composure = composure_value
     scores = pending_turn_scores(composure_value)
 
@@ -761,7 +925,7 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
 
 async def post_session_turn(session_id: str, body: TurnRequest):
 
-    return await _execute_turn(session_id, body.answer)
+    return await _execute_turn(session_id, body)
 
 
 @app.post("/sessions/{session_id}/interject", response_model=InterjectResponse)
@@ -843,7 +1007,7 @@ async def post_turn_legacy(body: TurnRequest):
 
     session_id = get_or_create_legacy_session()
 
-    return await _execute_turn(session_id, body.answer)
+    return await _execute_turn(session_id, body)
 
 
 

@@ -81,25 +81,33 @@ export default function Results({ navigate }: { navigate: Navigate }) {
   const sessionReport = state.status === 'ready' ? state.sessionReport : undefined
   const scenarioId = settings?.scenario_id ?? (summary?.opponentRole === 'Speaker' ? 'speaking' : undefined)
   const isSpeaking = scenarioId === 'speaking'
+  const isThesis = scenarioId === 'thesis'
   const reportOptions = { scenarioId, settings, sessionReport }
   const elapsedSec =
-    settings?.delivery_stats?.elapsed_sec ?? summary?.durationSec ?? 0
+    settings?.presentation_stats?.elapsed_sec ??
+    settings?.delivery_stats?.elapsed_sec ??
+    summary?.durationSec ??
+    0
   const durationDisplay = isSpeaking
     ? fmtSpeakingDuration(settings?.duration_mode, elapsedSec)
-    : summary
-      ? fmtDuration(summary.durationSec)
-      : '—'
-  const opponentLabel = isSpeaking ? 'Speaker' : 'Opponent'
+    : isThesis
+      ? `${fmtDuration(elapsedSec)} · ${settings?.skipped_qa ? 'presentation only' : 'presentation + Q&A'}`
+      : summary
+        ? fmtDuration(summary.durationSec)
+        : '—'
+  const opponentLabel = isSpeaking ? 'Speaker' : isThesis ? 'Committee' : 'Opponent'
   const opponentValue = isSpeaking
     ? `${opponent}${tone ? ` · ${tone}` : ''}`
-    : `${opponent} · ${tone}`
-  const overall = computeOverallScore(turns)
+    : isThesis
+      ? `${opponent}${tone ? ` · ${tone}` : ''}`
+      : `${opponent} · ${tone}`
+  const overall = computeOverallScore(turns, sessionReport)
   const metrics = buildMetrics(turns, reportOptions)
   const strengths = buildReportStrengths(turns, undefined, reportOptions)
   const improvements = buildReportImprovements(turns, undefined, reportOptions)
   const transcript = buildTranscript(turns)
   const ringScore = overall ?? 0
-  const teleprompterLabel = isSpeaking ? 'Teleprompter' : opponent
+  const teleprompterLabel = isSpeaking ? 'Teleprompter' : isThesis ? 'Defense file' : opponent
 
   const practiceAgain = () => {
     clearSessionSummary()
@@ -150,7 +158,9 @@ export default function Results({ navigate }: { navigate: Navigate }) {
               {turns.length > 0
                 ? isSpeaking
                   ? `Here is the full breakdown of your public speaking delivery${opponent !== 'HR Lead' ? ` as ${opponent}` : ''}. Review the read, then run it back.`
-                  : `Here is the full breakdown of your ${mode.toLowerCase()} session against ${opponent}. Review the read, then run it back.`
+                  : isThesis
+                    ? `Here is your thesis defense practice — presentation${settings?.skipped_qa ? '' : ' and committee Q&A'} scored against your uploaded defense file.`
+                    : `Here is the full breakdown of your ${mode.toLowerCase()} session against ${opponent}. Review the read, then run it back.`
                 : `Your studio session is on the server${state.status === 'ready' && state.jobTitle ? ` (${state.jobTitle})` : ''}. Answer questions in the studio to fill this report.`}
             </p>
             <div className="report-meta">

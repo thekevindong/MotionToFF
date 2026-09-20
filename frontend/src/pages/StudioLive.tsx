@@ -306,6 +306,10 @@ export type StudioLiveProps = {
   transcribing: boolean
   speakingFlow?: SpeakingFlowState
   teleprompterOverlay?: ReactNode
+  onSkipQa?: () => void
+  thesisSessionPhase?: 'presentation' | 'qa'
+  thesisQaTimerLabel?: string | null
+  isThesisPresentationRail?: boolean
 }
 
 export function StudioLive({
@@ -348,8 +352,15 @@ export function StudioLive({
   transcribing,
   speakingFlow,
   teleprompterOverlay,
+  onSkipQa,
+  thesisSessionPhase,
+  thesisQaTimerLabel,
+  isThesisPresentationRail,
 }: StudioLiveProps) {
   const isSpeaking = mode.id === 'speaking'
+  const isThesis = mode.id === 'thesis'
+  const showSpeakingRail = isSpeaking || Boolean(isThesisPresentationRail)
+  const showOpponent = Boolean(character) && !isSpeaking && (!isThesis || thesisSessionPhase === 'qa')
   const summaryLabel = isSpeaking && speakingSummary
     ? `${speakingSummary.title} · ${speakingSummary.speaker}`
     : character
@@ -380,11 +391,12 @@ export function StudioLive({
             data-live={started}
             data-low={started && sessionDurationSec > 0 && sessionDurationSec - seconds <= 30}
           >
-            {started
-              ? sessionDurationSec > 0
-                ? `${fmt(seconds)} / ${fmt(sessionDurationSec)}`
-                : fmt(seconds)
-              : 'Ready'}
+            {thesisQaTimerLabel ??
+              (started
+                ? sessionDurationSec > 0
+                  ? `${fmt(seconds)} / ${fmt(sessionDurationSec)}`
+                  : fmt(seconds)
+                : 'Ready')}
           </span>
         </div>
       </header>
@@ -400,7 +412,7 @@ export function StudioLive({
             draggable={false}
           />
           <div className="stage-bg-scrim" aria-hidden="true" />
-          {isSpeaking && teleprompterOverlay && (
+          {showSpeakingRail && teleprompterOverlay && (
             <div className="speaking-stage-rail">
               {teleprompterOverlay}
               <CameraTile
@@ -430,7 +442,7 @@ export function StudioLive({
           />
 
           <div className="opponent">
-            {!isSpeaking && character && (
+            {showOpponent && character && (
               <>
                 <div className="opponent-frame">
                   <img className="opponent-video" src={opponentImg} alt={`${character.name}, ${character.tone}`} />
@@ -463,7 +475,7 @@ export function StudioLive({
             </p>
           )}
 
-          {!isSpeaking && (
+          {!showSpeakingRail && (
             <CameraTile
               stream={stream}
               mediaStatus={mediaStatus}
@@ -506,43 +518,54 @@ export function StudioLive({
             </svg>
             <span>{micOn ? 'Mute' : 'Unmute'}</span>
           </button>
-          {sessionLive && isSpeaking && speakingFlow === 'READY' && (
+          {sessionLive && (isSpeaking || isThesisPresentationRail) && speakingFlow === 'READY' && (
             <button type="button" className="end-btn" onClick={onAnswerNow} disabled={controlsBusy}>
-              Start speech
+              {isThesisPresentationRail ? 'Start presentation' : 'Start speech'}
             </button>
           )}
-          {sessionLive && isSpeaking && speakingFlow === 'DELIVERING' && (
+          {sessionLive && (isSpeaking || isThesisPresentationRail) && speakingFlow === 'DELIVERING' && (
             <>
               <button type="button" className="end-btn" onClick={onSubmitAnswer} disabled={controlsBusy}>
-                Finish speech
+                {isThesisPresentationRail ? 'Finish presentation' : 'Finish speech'}
               </button>
+              {isThesisPresentationRail && onSkipQa && (
+                <button
+                  type="button"
+                  className="end-btn end-btn--ghost"
+                  onClick={onSkipQa}
+                  disabled={controlsBusy}
+                >
+                  Skip Q&amp;A — go to report
+                </button>
+              )}
               <button type="button" className="end-btn end-btn--ghost" onClick={onEndSession} disabled={controlsBusy}>
                 End &amp; get report
               </button>
             </>
           )}
-          {sessionLive && isSpeaking && (speakingFlow === 'SUBMITTING' || transcribing) && (
+          {sessionLive && (isSpeaking || isThesisPresentationRail) && (speakingFlow === 'SUBMITTING' || transcribing) && (
             <span className="end-btn end-btn--ghost end-btn--static" aria-live="polite">
               {transcribing ? 'Saving…' : 'Processing…'}
             </span>
           )}
-          {sessionLive && !isSpeaking && state === 'LISTENING' && (
+          {sessionLive && !isSpeaking && !isThesisPresentationRail && state === 'LISTENING' && (
             <button
               type="button"
               className="end-btn end-btn--ghost"
               onClick={onSubmitAnswer}
               disabled={!micOn}
             >
-              Send now
+              {isThesis && thesisSessionPhase === 'qa' ? 'Submit answer' : 'Send now'}
             </button>
           )}
-          {sessionLive && !isSpeaking && state === 'ASKING' && (
+          {sessionLive && !isSpeaking && !isThesisPresentationRail && state === 'ASKING' && (
             <button type="button" className="end-btn end-btn--ghost" onClick={onAnswerNow}>
               Answer now
             </button>
           )}
           {sessionLive &&
             !isSpeaking &&
+            !isThesisPresentationRail &&
             (state === 'THINKING' || transcribing) && (
             <span className="end-btn end-btn--ghost end-btn--static" aria-live="polite">
               {transcribing ? 'Transcribing…' : 'Processing…'}
@@ -550,6 +573,7 @@ export function StudioLive({
           )}
           {sessionLive &&
             !isSpeaking &&
+            !isThesisPresentationRail &&
             state !== 'LISTENING' &&
             state !== 'ASKING' &&
             state !== 'THINKING' &&
@@ -558,7 +582,7 @@ export function StudioLive({
               End &amp; get report
             </button>
           )}
-          {sessionLive && !isSpeaking && (state === 'LISTENING' || state === 'ASKING') && (
+          {sessionLive && !isSpeaking && !isThesisPresentationRail && (state === 'LISTENING' || state === 'ASKING') && (
             <button type="button" className="end-btn end-btn--ghost" onClick={onEndSession}>
               End &amp; get report
             </button>

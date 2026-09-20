@@ -7,6 +7,11 @@ import {
   type SpeakingDurationId,
 } from '../config/speaking-duration'
 import {
+  THESIS_PACK_OPTIONS,
+  thesisPackById,
+  type ThesisPackId,
+} from '../config/thesis-duration'
+import {
   SESSION_DURATION_OPTIONS,
   formatSessionDuration,
 } from '../config/session-duration'
@@ -16,9 +21,9 @@ import type { SpeechCatalogItem } from '../lib/api-types'
 
 export type PrepStep = 'scenario' | 'opponent' | 'context' | 'ready'
 
-const STEPS: { id: PrepStep; label: string; speakingLabel?: string }[] = [
+const STEPS: { id: PrepStep; label: string; speakingLabel?: string; thesisLabel?: string }[] = [
   { id: 'scenario', label: 'Scenario' },
-  { id: 'opponent', label: 'Opponent', speakingLabel: 'Speech' },
+  { id: 'opponent', label: 'Opponent', speakingLabel: 'Speech', thesisLabel: 'Duration' },
   { id: 'context', label: 'Context', speakingLabel: 'Duration' },
   { id: 'ready', label: 'Ready' },
 ]
@@ -27,9 +32,10 @@ function stepIndex(step: PrepStep): number {
   return STEPS.findIndex((s) => s.id === step)
 }
 
-function stepLabel(step: PrepStep, speaking: boolean): string {
+function stepLabel(step: PrepStep, speaking: boolean, thesis: boolean): string {
   const row = STEPS.find((s) => s.id === step)
   if (!row) return step
+  if (thesis && row.thesisLabel) return row.thesisLabel
   return speaking && row.speakingLabel ? row.speakingLabel : row.label
 }
 
@@ -60,6 +66,13 @@ export function StudioPrep({
   onEnterStudio,
   sessionDurationSec,
   onSessionDurationChange,
+  thesisPackId,
+  onThesisPackChange,
+  thesisDefenseReady,
+  thesisDefenseFilename,
+  thesisDefensePreview,
+  onThesisDefenseFilePicked,
+  thesisDefenseFileError,
 }: {
   modeId: string | null
   charId: string | null
@@ -82,7 +95,15 @@ export function StudioPrep({
   entering: boolean
   enterError: string | null
   onEnterStudio: () => void
+  thesisPackId: ThesisPackId
+  onThesisPackChange: (id: ThesisPackId) => void
+  thesisDefenseReady: boolean
+  thesisDefenseFilename: string | null
+  thesisDefensePreview: string
+  onThesisDefenseFilePicked: (picked: FileList | null) => void
+  thesisDefenseFileError: string | null
 }) {
+  const thesisDefenseInputRef = useRef<HTMLInputElement>(null)
   const [step, setStep] = useState<PrepStep>('scenario')
   const [speeches, setSpeeches] = useState<SpeechCatalogItem[]>([])
   const [speechesLoading, setSpeechesLoading] = useState(false)
@@ -93,6 +114,8 @@ export function StudioPrep({
 
   const mode = MODES.find((m) => m.id === modeId) ?? null
   const isSpeaking = mode?.id === 'speaking'
+  const isThesis = mode?.id === 'thesis'
+  const thesisPack = thesisPackById(thesisPackId)
   const character = SALARY_CHARACTERS.find((c) => c.id === charId) ?? null
   const selectedSpeech = speeches.find((s) => s.id === speechId) ?? null
   const isCustomSpeech = speechId === CUSTOM_SPEECH_ID
@@ -155,7 +178,11 @@ export function StudioPrep({
     }
   }, [speechId])
 
-  const opponentReady = isSpeaking ? Boolean(speechId && (isCustomSpeech ? customReady : true)) : Boolean(character)
+  const opponentReady = isSpeaking
+    ? Boolean(speechId && (isCustomSpeech ? customReady : true))
+    : isThesis
+      ? Boolean(thesisPack)
+      : Boolean(character)
 
   const goNext = () => {
     if (step === 'scenario' && mode) setStep('opponent')
@@ -177,7 +204,9 @@ export function StudioPrep({
 
   const readyToEnter = isSpeaking
     ? Boolean(mode && (isCustomSpeech ? customReady : selectedSpeech))
-    : Boolean(mode && character)
+    : isThesis
+      ? Boolean(mode && thesisDefenseReady && thesisPack)
+      : Boolean(mode && character)
 
   return (
     <main className="prep-main">
@@ -188,7 +217,7 @@ export function StudioPrep({
             <span
               className={`stepper-item ${i === activeIdx ? 'is-active' : ''} ${i < activeIdx ? 'is-done' : ''}`}
             >
-              {i + 1} · {stepLabel(s.id, isSpeaking)}
+              {i + 1} · {stepLabel(s.id, isSpeaking, isThesis)}
             </span>
           </span>
         ))}
@@ -198,7 +227,7 @@ export function StudioPrep({
         <section className="prep-panel" key="scenario">
           <h1 className="prep-panel-title">What do you want to practice?</h1>
           <p className="prep-panel-sub">
-            Pick a scenario. Public speaking and salary negotiation are available now.
+            Pick a scenario. Salary negotiation, public speaking, and thesis defense are available now.
           </p>
           <div className="mode-grid">
             {MODES.map((m, i) => (
@@ -220,7 +249,60 @@ export function StudioPrep({
         </section>
       )}
 
-      {step === 'opponent' && mode && !isSpeaking && (
+      {step === 'opponent' && mode && isThesis && (
+        <section className="prep-panel" key="thesis-duration">
+          <button type="button" className="prep-panel-back" onClick={() => setStep('scenario')}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M15 6l-6 6 6 6"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+            </svg>
+            {mode.title}
+          </button>
+          <h1 className="prep-panel-title">Choose your defense duration</h1>
+          <p className="prep-panel-sub">
+            Short or long pack — presentation time and committee Q&A are fixed for each.
+          </p>
+          <div className="prep-duration-block">
+            <div className="duration-grid" role="listbox" aria-label="Thesis duration pack">
+              {THESIS_PACK_OPTIONS.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  role="option"
+                  aria-selected={thesisPackId === opt.id}
+                  className={`duration-chip ${thesisPackId === opt.id ? 'is-selected' : ''}`}
+                  onClick={() => onThesisPackChange(opt.id)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="prep-panel-cta">
+            <button type="button" className="prep-btn prep-btn--primary" onClick={goNext} disabled={!thesisPack}>
+              Continue
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  fill="none"
+                />
+              </svg>
+            </button>
+          </div>
+        </section>
+      )}
+
+      {step === 'opponent' && mode && !isSpeaking && !isThesis && (
         <section className="prep-panel" key="opponent">
           <button type="button" className="prep-panel-back" onClick={() => setStep('scenario')}>
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -405,7 +487,93 @@ export function StudioPrep({
         </section>
       )}
 
-      {step === 'context' && mode && !isSpeaking && character && (
+      {step === 'context' && mode && isThesis && (
+        <section className="prep-panel prep-panel--wide" key="thesis-defense">
+          <button type="button" className="prep-panel-back" onClick={goBack}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M15 6l-6 6 6 6"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+            </svg>
+            {thesisPack?.label ?? 'Duration'}
+          </button>
+          <h1 className="prep-panel-title">Upload your defense text</h1>
+          <p className="prep-panel-sub">
+            Upload the text you will defend — your talk and Q&amp;A are about this file. Plain{' '}
+            <strong>.txt</strong> only (abstract, outline, or short paper). A committee member is assigned
+            randomly when you enter the studio.
+          </p>
+          {(contextError || thesisDefenseFileError) && (
+            <p className="prep-error" role="alert">
+              {thesisDefenseFileError ?? contextError}
+            </p>
+          )}
+          <div className="context-panel" aria-label="Defense document">
+            <div className="context-files">
+              <span className="context-field-label">Defense file (required)</span>
+              <button
+                type="button"
+                className="context-upload-btn"
+                onClick={() => thesisDefenseInputRef.current?.click()}
+              >
+                Choose .txt file
+              </button>
+              <input
+                ref={thesisDefenseInputRef}
+                type="file"
+                className="context-file-input"
+                accept=".txt,text/plain"
+                onChange={(e) => {
+                  onThesisDefenseFilePicked(e.target.files)
+                  e.target.value = ''
+                }}
+              />
+              {thesisDefenseFilename && (
+                <ul className="context-file-list">
+                  <li>
+                    <span className="context-file-name">{thesisDefenseFilename}</span>
+                  </li>
+                </ul>
+              )}
+            </div>
+            {thesisDefensePreview && (
+              <p className="context-caption" style={{ marginTop: 12 }}>
+                Preview: {thesisDefensePreview}
+              </p>
+            )}
+          </div>
+          <div className="prep-panel-cta">
+            <button type="button" className="prep-btn prep-btn--ghost" onClick={goBack}>
+              Back
+            </button>
+            <button
+              type="button"
+              className="prep-btn prep-btn--primary"
+              onClick={goNext}
+              disabled={!thesisDefenseReady}
+            >
+              Continue
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  fill="none"
+                />
+              </svg>
+            </button>
+          </div>
+        </section>
+      )}
+
+      {step === 'context' && mode && !isSpeaking && !isThesis && character && (
         <section className="prep-panel prep-panel--wide" key="context">
           <button type="button" className="prep-panel-back" onClick={goBack}>
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -545,7 +713,28 @@ export function StudioPrep({
               <span className="prep-summary-label">Scenario</span>
               <span className="prep-summary-value">{mode.title}</span>
             </div>
-            {isSpeaking && speechChosen ? (
+            {isThesis && thesisPack && thesisDefenseReady ? (
+              <>
+                <div className="prep-summary-row">
+                  <span className="prep-summary-label">Duration</span>
+                  <span className="prep-summary-value">{thesisPack.label}</span>
+                </div>
+                <div className="prep-summary-row">
+                  <span className="prep-summary-label">Defense file</span>
+                  <span className="prep-summary-value">{thesisDefenseFilename ?? 'defense.txt'}</span>
+                </div>
+                {thesisDefensePreview && (
+                  <div className="prep-summary-row">
+                    <span className="prep-summary-label">Preview</span>
+                    <span className="prep-summary-value">{thesisDefensePreview}</span>
+                  </div>
+                )}
+                <div className="prep-summary-row">
+                  <span className="prep-summary-label">Committee</span>
+                  <span className="prep-summary-value">Assigned at random when you enter</span>
+                </div>
+              </>
+            ) : isSpeaking && speechChosen ? (
               <>
                 <div className="prep-summary-row">
                   <span className="prep-summary-label">Speech</span>

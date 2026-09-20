@@ -14,6 +14,10 @@ import {
   speakingDurationSeconds,
   type SpeakingDurationId,
 } from '../config/speaking-duration'
+import {
+  thesisPackById,
+  type ThesisPackId,
+} from '../config/thesis-duration'
 import { useBrowserSpeechCapture } from '../hooks/use-browser-speech-capture'
 import { useComposureReactions, useInterjectDevShortcut } from '../hooks/use-composure-reactions'
 import { useComposureSampler } from '../hooks/use-composure-sampler'
@@ -35,10 +39,16 @@ import {
   getSessionReport,
   postSessionClose,
   postSpeakingPrepare,
+  postThesisPrepare,
   postTurn,
   uploadDocument,
 } from '../lib/api'
-import type { SpeechCatalogItem, SpeakingPrepareResponse, TurnResponse } from '../lib/api-types'
+import type {
+  SpeechCatalogItem,
+  SpeakingPrepareResponse,
+  ThesisPrepareResponse,
+  TurnResponse,
+} from '../lib/api-types'
 import {
   clearPrepComplete,
   isLiveStudioPath,
@@ -49,11 +59,13 @@ import {
 } from '../lib/prep-storage'
 import { getStoredSessionId, setStoredSessionId } from '../lib/session-storage'
 import { speakingPrepFromSettings } from '../lib/speaking-restore'
+import { thesisPrepFromSettings } from '../lib/thesis-restore'
 import { setSession } from '../session'
 import { sttBackoffDelayMs, transcribeAudio } from '../voice/stt'
 import { VAD_CONFIG } from '../voice/vad-config'
 import { StudioLive } from './StudioLive'
 import { SpeakingLive } from './SpeakingLive'
+import { ThesisLive } from './ThesisLive'
 import { StudioPrep } from './StudioPrep'
 import './Setup.css'
 
@@ -72,6 +84,14 @@ function browserCaptionAnswer(api: Pick<BrowserSpeechApi, 'getTranscript' | 'get
 }
 
 const CONTEXT_FILE_EXT = new Set(['.pdf', '.docx', '.txt'])
+const MIN_THESIS_DEFENSE_CHARS = 80
+
+function defenseTextPreview(text: string, maxLen = 300): string {
+  const stripped = text.trim().replace(/\s+/g, ' ')
+  if (stripped.length <= maxLen) return stripped
+  const trimmed = stripped.slice(0, maxLen - 1).replace(/\s+\S*$/, '')
+  return `${trimmed}…`
+}
 
 function speakingSpeechReady(speechId: string | null, customExcerpt: string): boolean {
   if (!speechId) return false
@@ -109,6 +129,14 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const [speakingPrep, setSpeakingPrep] = useState<SpeakingPrepareResponse | null>(null)
   const [speakingRestore, setSpeakingRestore] = useState<'idle' | 'loading' | 'done'>('idle')
   const [speakingRestartNote, setSpeakingRestartNote] = useState<string | null>(null)
+  const [thesisPackId, setThesisPackId] = useState<ThesisPackId>(
+    (defaults.thesisPackId as ThesisPackId | undefined) ?? 'short',
+  )
+  const [thesisPrep, setThesisPrep] = useState<ThesisPrepareResponse | null>(null)
+  const [thesisRestore, setThesisRestore] = useState<'idle' | 'loading' | 'done'>('idle')
+  const [thesisDefenseReady, setThesisDefenseReady] = useState(false)
+  const [thesisDefensePreview, setThesisDefensePreview] = useState('')
+  const [thesisDefenseFileError, setThesisDefenseFileError] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
   const [seconds, setSeconds] = useState(0)
   const [sessionDurationSec, setSessionDurationSec] = useState(initialSessionDurationSec)
@@ -161,8 +189,14 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
 
   const mode = MODES.find((m) => m.id === modeId) ?? null
   const isSpeakingMode = mode?.id === 'speaking'
+  const isThesisMode = mode?.id === 'thesis'
   const character = SALARY_CHARACTERS.find((c) => c.id === charId) ?? null
-  const characterId = isSpeakingMode ? null : (character?.id ?? null)
+  const thesisCharacter =
+    isThesisMode && thesisPrep
+      ? (SALARY_CHARACTERS.find((c) => c.id === thesisPrep.character_id) ?? null)
+      : null
+  const liveCharacter = isThesisMode ? thesisCharacter : character
+  const characterId = isSpeakingMode || isThesisMode ? (thesisPrep?.character_id ?? null) : (character?.id ?? null)
 
   const { stream, status: mediaStatus, error: mediaError, request, stop, setMicEnabled, setVideoEnabled } =
     useMediaStream()
@@ -777,6 +811,53 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     }
   }, [isSpeakingMode, navigate, speakingPrep, studioPhase])
 
+  useEffect(() => {
+    if (!isThesisMode || studioPhase !== 'live' || thesisPrep) {
+      if (thesisPrep) setThesisRestore('done')
+      return
+    }
+    let cancelled = false
+    setThesisRestore('loading')
+    void (async () => {
+      const sessionId = getStoredSessionId()
+      if (!sessionId) {
+        if (!cancelled) {
+          clearPrepComplete()
+          navigate('/start')
+          setThesisRestore('idle')
+        }
+        return
+      }
+      try {
+        const data = await getSession(sessionId)
+        const prep = thesisPrepFromSettings(data.settings)
+        if (!prep) throw new Error('missing thesis prep')
+        if (cancelled) return
+        setThesisPrep(prep)
+        setCharId(prep.character_id)
+        const dur = data.settings?.session_duration_sec
+        if (typeof dur === 'number' && dur >= 0) setSessionDurationSec(dur)
+        if (prep.thesis_pack === 'short' || prep.thesis_pack === 'long') {
+          setThesisPackId(prep.thesis_pack)
+        }
+        setThesisDefensePreview(prep.defense_text_preview)
+        setThesisDefenseReady(true)
+        setStarted(true)
+        setThesisRestore('done')
+      } catch {
+        if (!cancelled) {
+          clearPrepComplete()
+          setStartError('Session expired after refresh — upload your defense file and launch again.')
+          navigate('/start')
+          setThesisRestore('idle')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isThesisMode, navigate, thesisPrep, studioPhase])
+
   const resetStudio = useCallback(() => {
     finish()
     reset()
@@ -808,6 +889,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setSpeakingPrep(null)
     setSpeakingRestartNote(null)
     setSpeakingRestore('idle')
+    setThesisPrep(null)
+    setThesisRestore('idle')
+    setThesisDefenseReady(false)
+    setThesisDefensePreview('')
+    setThesisDefenseFileError(null)
     clearPrepComplete()
     setStudioPhase('prep')
   }, [browserSpeech, finish, reset, stop])
@@ -815,7 +901,8 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const startSession = async () => {
     if (!mode || !mode.ready || starting) return false
     if (mode.id === 'speaking' && !speakingSpeechReady(speechId, customSpeechExcerpt)) return false
-    if (mode.id !== 'speaking' && !character) return false
+    if (mode.id === 'thesis' && (!thesisDefenseReady || pendingContextFiles.length !== 1)) return false
+    if (mode.id !== 'speaking' && mode.id !== 'thesis' && !character) return false
     setStartError(null)
     setTurnError(null)
     setVoiceHint(null)
@@ -826,7 +913,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       setCloudSttConfigured(voice.stt)
       cloudSttFailureStreakRef.current = 0
       setCloudSttPausedUntil(0)
-      if (mode.id !== 'speaking') {
+      if (mode.id !== 'speaking' && mode.id !== 'thesis') {
         if (!voice.tts) {
           setVoiceHint('Interviewer voice uses your browser until ELEVENLABS_API_KEY is set on the backend.')
         }
@@ -842,13 +929,38 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
           'Speech captions use browser recognition until ELEVENLABS_API_KEY is set on the backend.',
         )
       }
-      if (mode.id !== 'speaking') {
+      if (mode.id !== 'speaking' && mode.id !== 'thesis') {
         const media = await request()
         if (!media) {
           setStartError(mediaError ?? 'Microphone and camera access are required to start.')
           return false
         }
         setVideoOn(true)
+      }
+      if (mode.id === 'thesis') {
+        const media = await request()
+        if (!media) {
+          setStartError(mediaError ?? 'Microphone and camera access are required to start.')
+          return false
+        }
+        setVideoOn(true)
+        const pack = thesisPackById(thesisPackId)
+        if (!pack) return false
+        const defenseFile = pendingContextFiles[0]
+        const durationSec = pack.presentationSec + pack.qaSec
+        const { session_id } = await createSession({
+          jobTitle: `Thesis defense — ${defenseFile.name}`,
+          scenarioId: 'thesis',
+          sessionDurationSec: durationSec,
+        })
+        await uploadDocument(session_id, defenseFile)
+        const prep = await postThesisPrepare(session_id, { thesisPack: thesisPackId })
+        setThesisPrep(prep)
+        setCharId(prep.character_id)
+        setStoredSessionId(session_id)
+        setSessionDurationSec(durationSec)
+        setStarted(true)
+        return true
       }
       if (mode.id === 'speaking') {
         const media = await request()
@@ -912,13 +1024,21 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const enterStudio = async () => {
     if (!mode) return
     if (mode.id === 'speaking' && !speakingSpeechReady(speechId, customSpeechExcerpt)) return
-    if (mode.id !== 'speaking' && !character) return
+    if (mode.id === 'thesis' && !thesisDefenseReady) return
+    if (mode.id !== 'speaking' && mode.id !== 'thesis' && !character) return
+    const thesisPack = mode.id === 'thesis' ? thesisPackById(thesisPackId) : null
     writePrepDefaults({
       modeId: mode.id,
-      characterId: character?.id,
-      sessionDurationSec: mode.id === 'speaking' ? speakingDurationSeconds(speakingDurationId) : sessionDurationSec,
+      characterId: mode.id === 'thesis' ? undefined : character?.id,
+      sessionDurationSec:
+        mode.id === 'speaking'
+          ? speakingDurationSeconds(speakingDurationId)
+          : mode.id === 'thesis' && thesisPack
+            ? thesisPack.presentationSec + thesisPack.qaSec
+            : sessionDurationSec,
       speechId: mode.id === 'speaking' ? speechId ?? undefined : undefined,
       speakingDurationId: mode.id === 'speaking' ? speakingDurationId : undefined,
+      thesisPackId: mode.id === 'thesis' ? thesisPackId : undefined,
     })
     markPrepComplete()
     setStudioPhase('live')
@@ -1050,14 +1170,68 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     }
   }
 
+  const onThesisPackChange = (id: ThesisPackId) => {
+    setThesisPackId(id)
+    const pack = thesisPackById(id)
+    if (pack) {
+      setSessionDurationSec(pack.presentationSec + pack.qaSec)
+    }
+    writePrepDefaults({ thesisPackId: id, sessionDurationSec: pack ? pack.presentationSec + pack.qaSec : undefined })
+  }
+
+  const onThesisDefenseFilePicked = (picked: FileList | null) => {
+    setThesisDefenseFileError(null)
+    setStartError(null)
+    const file = picked?.[0]
+    if (!file) return
+    const lower = file.name.toLowerCase()
+    if (!lower.endsWith('.txt')) {
+      setThesisDefenseFileError('Thesis defense requires one plain-text .txt file.')
+      setPendingContextFiles([])
+      setThesisDefenseReady(false)
+      setThesisDefensePreview('')
+      return
+    }
+    void file.text().then(
+      (text) => {
+        if (text.trim().length < MIN_THESIS_DEFENSE_CHARS) {
+          setThesisDefenseFileError(
+            `Defense text is too short — need at least ${MIN_THESIS_DEFENSE_CHARS} characters after upload.`,
+          )
+          setPendingContextFiles([])
+          setThesisDefenseReady(false)
+          setThesisDefensePreview('')
+          return
+        }
+        setPendingContextFiles([file])
+        setThesisDefensePreview(defenseTextPreview(text))
+        setThesisDefenseReady(true)
+      },
+      () => {
+        setThesisDefenseFileError('Could not read that file — try a UTF-8 .txt file.')
+        setPendingContextFiles([])
+        setThesisDefenseReady(false)
+        setThesisDefensePreview('')
+      },
+    )
+  }
+
   const onModeChange = (m: Mode) => {
     setModeId(m.id)
     setCharId(null)
     setSpeechId(null)
     setSpeechMeta(null)
     setCustomSpeechExcerpt('')
+    setPendingContextFiles([])
+    setThesisDefenseReady(false)
+    setThesisDefensePreview('')
+    setThesisDefenseFileError(null)
     if (m.id === 'speaking') {
       setSessionDurationSec(speakingDurationSeconds(speakingDurationId))
+    }
+    if (m.id === 'thesis') {
+      const pack = thesisPackById(thesisPackId)
+      if (pack) setSessionDurationSec(pack.presentationSec + pack.qaSec)
     }
     writePrepDefaults({ modeId: m.id })
   }
@@ -1138,12 +1312,19 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
           entering={starting}
           enterError={startError}
           onEnterStudio={() => void enterStudio()}
+          thesisPackId={thesisPackId}
+          onThesisPackChange={onThesisPackChange}
+          thesisDefenseReady={thesisDefenseReady}
+          thesisDefenseFilename={pendingContextFiles[0]?.name ?? null}
+          thesisDefensePreview={thesisDefensePreview}
+          onThesisDefenseFilePicked={onThesisDefenseFilePicked}
+          thesisDefenseFileError={thesisDefenseFileError}
         />
       </div>
     )
   }
 
-  if (!mode || (!isSpeakingMode && !character)) {
+  if (!mode || (!isSpeakingMode && !isThesisMode && !character)) {
     navigate('/start')
     return null
   }
@@ -1165,6 +1346,38 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       )
     }
     return null
+  }
+
+  if (isThesisMode && !thesisPrep) {
+    if (thesisRestore === 'loading') {
+      return (
+        <div className="studio studio--live">
+          <p className="prep-panel-sub">Restoring your thesis session…</p>
+        </div>
+      )
+    }
+    navigate('/start')
+    return null
+  }
+
+  if (isThesisMode && thesisPrep && liveCharacter) {
+    return (
+      <ThesisLive
+        mode={mode}
+        prep={thesisPrep}
+        character={liveCharacter}
+        onLeaveStudio={leaveStudio}
+        restartNote={
+          thesisRestore === 'done' && thesisPrep.thesis_phase === 'presentation'
+            ? 'Refresh restarts your presentation timer — tap Start presentation when ready.'
+            : null
+        }
+        onNavigateResults={() => {
+          resetStudio()
+          navigate('/results')
+        }}
+      />
+    )
   }
 
   if (isSpeakingMode && speakingPrep && speakingSummary) {

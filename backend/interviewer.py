@@ -86,8 +86,18 @@ SCENARIO_SALARY_ADDENDUM = """Scenario: salary negotiation for a job offer (not 
 Focus on compensation expectations, justification, benefits, timing, and counters. After a brief acknowledgment, ask exactly ONE new negotiation question per turn unless the negotiation is clearly finished — then close warmly with end_session true.
 Never pivot to unrelated behavioral interview topics (e.g. "tell me about yourself", teamwork stories, generic strengths) unless they directly support a compensation argument."""
 
+SCENARIO_THESIS_ADDENDUM = """Scenario: thesis / dissertation defense committee Q&A (not salary or generic behavioral interview).
+The candidate uploaded a defense document — every question must be answerable from that text only.
+Anchor each question in the upload: quote or paraphrase a specific claim, method, result, or limitation from their defense file.
+Probe methods, validity, contributions, and limitations. No compensation, job-offer, or HR policy framing.
+After a brief acknowledgment, ask exactly ONE sharp committee question per turn unless Q&A time is up — then close warmly with end_session true."""
+
 SALARY_TURN_ANCHOR = (
     "[Scenario lock: salary/compensation negotiation only — no generic behavioral interview questions.]"
+)
+
+THESIS_TURN_ANCHOR = (
+    "[Scenario lock: thesis defense Q&A — questions must cite or paraphrase claims in the uploaded defense text only.]"
 )
 
 # Interactions API (recommended over legacy generateContent). See:
@@ -128,11 +138,21 @@ FIRST_TURN_INPUT = (
 SALARY_FIRST_TURN_INPUT = (
     "The candidate has joined the salary negotiation. Open with your first compensation-focused question."
 )
+THESIS_FIRST_TURN_INPUT = (
+    "The candidate just finished a timed oral presentation of their uploaded defense text. "
+    "Their presentation transcript may be in the history. "
+    "Ask exactly ONE sharp committee question answerable only from the defense document. "
+    "Spoken line ≤ 35 words."
+)
 FOLLOWUP_SUFFIX = (
     "\n\nBrief acknowledgment + one new interview question (~35–55 words total)."
 )
 SALARY_FOLLOWUP_SUFFIX = (
     "\n\nBrief acknowledgment + one salary negotiation question (~35–55 words total)."
+)
+THESIS_FOLLOWUP_SUFFIX = (
+    "\n\nQ&A time is limited. Brief acknowledgment, then exactly ONE new defense question (~35 words). "
+    "Vary angle (methods, results, validity, limitations). Never ask about content not in the uploaded defense text."
 )
 JSON_TURN_REMINDER = (
     '\n\nReply with ONLY JSON: {"spoken": string, "end_session": boolean}. '
@@ -171,6 +191,12 @@ def _delivery_tone_appendix(
                 + comp_note
                 + "). Shift negotiation angle (e.g. equity, bonus, level) while staying friendly."
             )
+        elif _is_thesis_scenario(session_id):
+            tone = (
+                "Delivery signals: comfortable session (~"
+                + comp_note
+                + "). Shift defense angle (methods vs. limitations vs. contribution) while staying professional."
+            )
         else:
             tone = (
                 "Delivery signals: comfortable session (~"
@@ -183,6 +209,12 @@ def _delivery_tone_appendix(
                 "Delivery signals: composure ~"
                 + comp_note
                 + ". Standard supportive salary-negotiation tone."
+            )
+        elif _is_thesis_scenario(session_id):
+            tone = (
+                "Delivery signals: composure ~"
+                + comp_note
+                + ". Standard supportive thesis-committee tone."
             )
         else:
             tone = (
@@ -232,6 +264,11 @@ def build_interviewer_context(session_id: str | None) -> str:
             "(comp, level, scope, market data). Reference their experience when it supports their ask; "
             "do not read the documents aloud.\n\n"
         )
+    elif settings.get("scenario_id") == "thesis":
+        lead_in = (
+            "The candidate's uploaded defense text is below. Ask committee questions that probe claims, "
+            "methods, limitations, and contributions stated in that text only; do not read the document aloud.\n\n"
+        )
     else:
         lead_in = (
             "Use the candidate background below to ask relevant, specific interview questions. "
@@ -253,10 +290,18 @@ def _is_salary_scenario(session_id: str | None) -> bool:
     return _session_persona_settings(session_id).get("scenario_id") == "salary"
 
 
+def _is_thesis_scenario(session_id: str | None) -> bool:
+    return _session_persona_settings(session_id).get("scenario_id") == "thesis"
+
+
 def _mock_question_bank(session_id: str | None) -> list[str]:
     settings = _session_persona_settings(session_id)
     if settings.get("scenario_id") == "salary":
         return MOCK_SALARY_QUESTIONS
+    if settings.get("scenario_id") == "thesis" and session_id:
+        from thesis import mock_thesis_questions
+
+        return mock_thesis_questions(session_id, 6)
     return MOCK_QUESTIONS
 
 
@@ -304,7 +349,9 @@ def _persona_instruction(session_id: str | None) -> str:
     else:
         base = f"{SYSTEM_INSTRUCTION}\n\n{TURN_OUTPUT_JSON_RULES}"
 
-    if scenario_id == "salary":
+    if scenario_id == "thesis":
+        base = f"{base}\n\n{SCENARIO_THESIS_ADDENDUM}"
+    elif scenario_id == "salary":
         base = f"{base}\n\n{SCENARIO_SALARY_ADDENDUM}"
 
     return base
@@ -322,6 +369,8 @@ def _first_turn_input(session_id: str | None) -> str:
     settings = _session_persona_settings(session_id)
     if settings.get("scenario_id") == "salary":
         return SALARY_FIRST_TURN_INPUT
+    if settings.get("scenario_id") == "thesis":
+        return THESIS_FIRST_TURN_INPUT
     return FIRST_TURN_INPUT
 
 
@@ -329,6 +378,8 @@ def _followup_suffix(session_id: str | None) -> str:
     settings = _session_persona_settings(session_id)
     if settings.get("scenario_id") == "salary":
         return SALARY_FOLLOWUP_SUFFIX
+    if settings.get("scenario_id") == "thesis":
+        return THESIS_FOLLOWUP_SUFFIX
     return FOLLOWUP_SUFFIX
 
 
@@ -345,6 +396,10 @@ def _history_as_recovery_input(history: History, session_id: str | None = None) 
     if _is_salary_scenario(session_id):
         closing = (
             "Interviewer: (briefly acknowledge their last answer, then ask the next salary negotiation question)"
+        )
+    elif _is_thesis_scenario(session_id):
+        closing = (
+            "Interviewer: (briefly acknowledge their last answer, then ask the next thesis defense question grounded in the upload)"
         )
     else:
         closing = (
@@ -587,7 +642,12 @@ def _gemini_next_turn(
         suffix = _followup_suffix(session_id) + _delivery_tone_appendix(
             delivery_context, session_id
         )
-        anchor = f"{SALARY_TURN_ANCHOR}\n\n" if _is_salary_scenario(session_id) else ""
+        if _is_salary_scenario(session_id):
+            anchor = f"{SALARY_TURN_ANCHOR}\n\n"
+        elif _is_thesis_scenario(session_id):
+            anchor = f"{THESIS_TURN_ANCHOR}\n\n"
+        else:
+            anchor = ""
         body["input"] = f"{anchor}{answer}{suffix}{JSON_TURN_REMINDER}"
         body["previous_interaction_id"] = previous_id
     else:
@@ -689,7 +749,9 @@ def _interjection_persona(session_id: str | None) -> str:
         base = CHARACTER_PERSONAS[character_id]
     else:
         base = "You are the interviewer in a live practice session."
-    if _is_salary_scenario(session_id):
+    if _is_thesis_scenario(session_id):
+        base = f"{base}\n\n{SCENARIO_THESIS_ADDENDUM}"
+    elif _is_salary_scenario(session_id):
         base = f"{base}\n\n{SCENARIO_SALARY_ADDENDUM}"
     return base
 

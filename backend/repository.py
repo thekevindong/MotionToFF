@@ -181,6 +181,30 @@ def get_turns(session_id: str) -> list[dict[str, Any]]:
     return [_turn_row_to_record(r) for r in rows]
 
 
+def patch_last_turn_next_question(session_id: str, next_question: dict[str, Any]) -> bool:
+    """Update next_question on the latest turn (thesis Q&A bootstrap). Returns False if no turns."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT turn_index FROM turns
+            WHERE session_id = ?
+            ORDER BY turn_index DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            """
+            UPDATE turns SET next_question_json = ?
+            WHERE session_id = ? AND turn_index = ?
+            """,
+            (json.dumps(next_question), session_id, row["turn_index"]),
+        )
+    return True
+
+
 def append_turn(session_id: str, record: dict[str, Any]) -> None:
     now = _utc_now()
     with _connect() as conn:

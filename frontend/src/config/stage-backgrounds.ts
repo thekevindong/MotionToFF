@@ -27,10 +27,23 @@ export function audienceStageUrl(
 }
 
 /** Static stage backdrops served from /public/backgrounds */
-export function stageBackgroundUrl(modeId: string, characterId: CharacterId | null): string {
+export function stageBackgroundUrl(
+  modeId: string,
+  characterId: CharacterId | null,
+  options?: { thesisPhase?: 'presentation' | 'qa' },
+): string {
   switch (modeId) {
     case 'thesis':
-      return audienceStageUrl('empty', null)
+      if (options?.thesisPhase === 'qa') {
+        const officeByCharacter: Record<CharacterId, string> = {
+          recruiter: '/backgrounds/office/home1.png',
+          manager: '/backgrounds/office/home2.png',
+          hr: '/backgrounds/office/home3.png',
+        }
+        if (characterId && officeByCharacter[characterId]) return officeByCharacter[characterId]
+        return '/backgrounds/office/home1.png'
+      }
+      return audienceStageUrl('house', null)
     case 'speaking':
       return audienceStageUrl('house', null)
     case 'salary':

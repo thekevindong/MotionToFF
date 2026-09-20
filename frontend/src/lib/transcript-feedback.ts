@@ -169,6 +169,30 @@ export const STRENGTH_CATALOG: FeedbackCatalogEntry[] = [
   },
 ]
 
+export const THESIS_STRENGTH_CATALOG: FeedbackCatalogEntry[] = [
+  {
+    id: 'thesis_defense_coverage',
+    priority: 9,
+    text: 'Your presentation echoed language from your defense upload — the committee hears alignment with your written claims.',
+    when: (s) => s.scenarioId === 'thesis' && (s.teleprompterCoverage ?? 0) >= 0.5,
+  },
+  {
+    id: 'thesis_skip_qa_path',
+    priority: 5,
+    text: 'You chose presentation-only practice — use Skip Q&A when you only want timed delivery feedback.',
+    when: (s) => s.scenarioId === 'thesis' && s.turnCount === 1,
+  },
+]
+
+export const THESIS_IMPROVEMENT_CATALOG: FeedbackCatalogEntry[] = [
+  {
+    id: 'thesis_empty_presentation',
+    priority: 10,
+    text: 'No presentation transcript was captured — check mic permissions and speak through your defense summary.',
+    when: (s) => s.scenarioId === 'thesis' && s.anyEmpty,
+  },
+]
+
 export const SPEAKING_STRENGTH_CATALOG: FeedbackCatalogEntry[] = [
   {
     id: 'strong_coverage',
@@ -395,7 +419,9 @@ export function pickTranscriptStrengths(
   const catalog =
     signals.scenarioId === 'speaking' || options?.scenarioId === 'speaking'
       ? SPEAKING_STRENGTH_CATALOG
-      : STRENGTH_CATALOG
+      : signals.scenarioId === 'thesis' || options?.scenarioId === 'thesis'
+        ? [...THESIS_STRENGTH_CATALOG, ...STRENGTH_CATALOG]
+        : STRENGTH_CATALOG
   return pickFromCatalog(catalog, signals, cap)
 }
 
@@ -411,6 +437,8 @@ export function pickTranscriptImprovements(
   const catalog =
     signals.scenarioId === 'speaking' || options?.scenarioId === 'speaking'
       ? SPEAKING_IMPROVEMENT_CATALOG
-      : IMPROVEMENT_CATALOG
+      : signals.scenarioId === 'thesis' || options?.scenarioId === 'thesis'
+        ? [...THESIS_IMPROVEMENT_CATALOG, ...IMPROVEMENT_CATALOG]
+        : IMPROVEMENT_CATALOG
   return pickFromCatalog(catalog, signals, cap)
 }
