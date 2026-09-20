@@ -66,19 +66,15 @@ frontend/            Vite 8 + React 19 (SpeakUp design)
   src/lib/           api.ts, report-data.ts, session-storage.ts
   src/config/        modes.ts, character-expressions.ts
   src/voice/         stt.ts (backend proxy)
-  public/            brand/, characters/, images/{recruiter,manager,hr}/ (expression frames)
+  public/            brand/, characters/, images/{recruiter,manager,hr}/ (runtime expression frames)
+  scripts/           normalize-expression-images.ps1 (optional; raw art in assets/expression-source/)
   .env               VITE_API_URL (see .env.example)
-
-scripts/
-  normalize-expression-images.ps1   One-time copy from repo-root images/* rb/
 
 presage_smoke/       hello_vitals + run_smoke.ps1
 docs/presage-step5.md
 plan.md              Frontend integration checklist (Phases 0–6 complete)
 handoff.md           This file
 ```
-
-Rollback UI: git branch `legacy-next-frontend` (Next.js on port 3000).
 
 ---
 

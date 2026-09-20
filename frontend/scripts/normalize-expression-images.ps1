@@ -1,9 +1,12 @@
-# One-time copy: repo-root images/* rb/ -> frontend/public/images/{recruiter,manager,hr}/
-# Run from repo root: .\scripts\normalize-expression-images.ps1
+# Copy raw expression PNGs -> frontend/public/images/{recruiter,manager,hr}/
+# Place sources under frontend/assets/expression-source/ using the same folder names
+# as the original export (e.g. "uni n rb", "hr m rb"). Run from repo root:
+#   .\frontend\scripts\normalize-expression-images.ps1
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path $PSScriptRoot -Parent
-$destBase = Join-Path $root "frontend\public\images"
+$frontendRoot = Split-Path $PSScriptRoot -Parent
+$srcBase = Join-Path $frontendRoot "assets\expression-source"
+$destBase = Join-Path $frontendRoot "public\images"
 
 $mappings = @(
   @{ Src = "uni n rb"; Char = "recruiter"; Mood = "neutral" },
@@ -15,9 +18,9 @@ $mappings = @(
 )
 
 foreach ($m in $mappings) {
-  $dir = Join-Path (Join-Path $root "images") $m.Src
+  $dir = Join-Path $srcBase $m.Src
   if (-not (Test-Path $dir)) {
-    throw "Missing source folder: $dir"
+    throw "Missing source folder: $dir (add raw PNGs there before running)"
   }
   $files = Get-ChildItem $dir -Filter *.png | Sort-Object Name
   if ($files.Count -ne 4) {

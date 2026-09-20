@@ -26,7 +26,7 @@ Or from repo root: `npm run dev` (after `npm install` in `frontend/` once).
 
 Copy `frontend/.env.example` to `frontend/.env` and set `VITE_API_URL` if the API is not on `http://localhost:8000`.
 
-Open http://localhost:5173 — **Enter studio** (`/start`). Legacy URLs `/setup`, `/interview`, and `/report` still work as aliases. Rollback UI: branch `legacy-next-frontend` (Next.js on port 3000).
+Open http://localhost:5173 — **Enter studio** (`/start`). Legacy URLs `/setup`, `/interview`, and `/report` still work as aliases.
 
 ## Step 5 — Presage smoke test
 
