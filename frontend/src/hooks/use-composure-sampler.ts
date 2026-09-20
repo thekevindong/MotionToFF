@@ -44,6 +44,11 @@ export function useComposureSampler({ active, sessionId, questionId, getMetrics,
           filler_rate: null,
           answer_latency_ms: null,
           speech_rate_wpm: null,
+          faceRaw: {
+            lookAway: Number(m.raw.lookAway.toFixed(3)),
+            instability: Number(m.raw.instability.toFixed(3)),
+            blinksPerMin: Number(m.raw.blinksPerMin.toFixed(1)),
+          },
         },
       }
     }

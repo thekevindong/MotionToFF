@@ -1,469 +1,453 @@
-# SpeakUp frontend integration plan
+# SpeakUp — Studio UX & conversation plan
 
-**Goal:** Replace the outdated Next.js app in `frontend/` with the SpeakUp design in `speak-up-front-end-design/frontend/`, wired to the **current** FastAPI backend at `backend/` (SQLite sessions, `/turn` loop, Gemini/Nemotron/Presage seams, document upload). The new UI becomes the only user-facing frontend; the old Next pages and styling are removed after cutover.
+**Goal:** Fix interview-stage polish, restore a dedicated prep flow before the live call, and evolve turn-taking from explicit “Stop & submit” into natural back-and-forth — including optional Presage-driven interviewer reactions.
 
-**Authoritative runtime docs after merge:** update [handoff.md](handoff.md) (paths, ports, env vars). This file is the **integration checklist** until cutover is done.
+**Runtime truth:** [handoff.md](handoff.md)  
+**Presage / sidecar:** [docs/presage-step5.md](docs/presage-step5.md)
 
-**Date context:** SteelHacks XIII — integration should preserve the demo path that works with **zero API keys**, then improve when keys are set.
+**Primary surfaces today**
 
----
+| Area | Location |
+|------|----------|
+| Live studio (interview UI) | `frontend/src/pages/Setup.tsx`, `Setup.css` |
+| Turn + voice | `frontend/src/hooks/use-interview-machine.ts`, `voice/stt.ts` |
+| Interviewer expressions | `frontend/src/hooks/use-character-expression.ts` |
+| Presage pane data | `frontend/src/hooks/use-presage-metrics.ts`, `use-composure-sampler.ts`, `use-face-composure.ts` |
+| Backend turn loop | `backend/main.py` (`POST /sessions/{id}/turn`), `interviewer.py`, `director.py`, `composure.py` |
 
-## 1. Current vs target (summary)
-
-| Area | Current `frontend/` (Next.js 16) | Target `speak-up-front-end-design/frontend/` (Vite + React 19) |
-|------|-----------------------------------|----------------------------------------------------------------|
-| Stack | Next App Router, Tailwind, shadcn, MediaPipe | Vite 8, plain CSS modules per page, no router package |
-| Routes | `/`, `/setup`, `/interview`, `/report` | `/`, `/start` (studio), `/results`; legacy entrypoints `/diag`, `/report` (old chart UI in `main.tsx`) |
-| Backend | `NEXT_PUBLIC_API_URL` → `:8000` | Not wired — mock timer + in-memory `session.ts` |
-| Voice | `useInterviewMachine` + `/api/stt` + `/api/tts` (ElevenLabs) | Mic toggle is **visual only**; no STT/TTS loop |
-| Composure | MediaPipe + sampler hooks on interview page | Presage pane uses **static** `PRESAGE_METRICS` |
-| Report | Live `GET /sessions/{id}` + composure canvas + rubrics | `Results.tsx` uses **static** copy; only meta from `setSession()` |
-| Setup / context | Job title + PDF/DOCX/TXT upload → `POST /sessions` | No upload; scenario + opponent only |
-| Personas | Single interviewer image (`Maya Chen` in code) | Three salary opponents + locked scenario modes |
-| Static assets | `frontend/public/interviewer.png` (single frame) | **Posters:** `speak-up-front-end-design/frontend/public/brand/` + `characters/` (3 thumbnails). **Live interview:** repo-root [`images/`](images/) — 24 expression PNGs (see §8) |
-| Opponent visuals | One static photo | Thumbnail in dropdown + **dynamic expression** on stage during session |
-
-**Backend to keep:** `backend/` at repo root (not the slimmer copy inside `speak-up-front-end-design/backend/`). CORS already lists Vite ports `5173–5175` and Next `3000`.
+**Reference UI (prep wizard):** commit `c45be82` had a three-step flow (`mode` → `character` → `launch`) with `.stepper`, `.mode-grid`, `.launch-*` in `Setup.tsx` / `Setup.css`. Reuse that interaction pattern with the **current** light studio visual language (paper/night tokens, typography), not a pixel-perfect revert.
 
 ---
 
-## 2. Recommended integration strategy
+## Success criteria (demo-ready)
 
-### Decision: adopt Vite SpeakUp as the new `frontend/`
-
-**Why not port CSS into Next?**
-
-- The design is already a cohesive Vite app (pathname routing in `App.tsx` + `main.tsx`, large page-specific CSS files).
-- Duplicating into Next would mean re-homing hundreds of lines of CSS and re-implementing draggable camera tile behavior inside Tailwind.
-- “Fully replace” is cleaner as **delete Next app → promote Vite tree → fix tooling/docs**.
-
-**Voice proxy:** Today ElevenLabs keys live in `frontend/.env.local` and are used only by Next route handlers (`app/api/stt`, `app/api/tts`). After cutover, either:
-
-1. **Preferred:** Add `POST /api/stt` and `POST /api/tts` on FastAPI (same logic as current Next routes), key in `backend/.env`, frontend calls `VITE_API_URL` only.
-2. **Alternative:** Vite dev server proxy + small Node handler — avoid for production unless you also deploy that handler.
-
-Document the chosen approach in `backend/.env.example` and remove “frontend only” ElevenLabs note when backend owns voice.
-
-### Cutover mechanics (high level)
-
-1. Archive or delete current `frontend/` (keep a git branch/tag `pre-speakup-ui` before force-replace if the team wants rollback).
-2. Copy `speak-up-front-end-design/frontend/*` → `frontend/`.
-3. Copy `speak-up-front-end-design/frontend/public/` (`brand/`, `characters/`) into `frontend/public/`, and **normalize** repo-root [`images/`](images/) into URL-safe paths under `frontend/public/images/` (see §8).
-4. Port integration code from old Next tree into Vite `src/` (§5–§7).
-5. Unify routes and remove duplicate legacy pages (§4).
-6. Update root README, handoff, scripts, CI, and CORS if deploy origin changes.
-7. Remove or repurpose `speak-up-front-end-design/` once merged (optional: keep as design archive folder until sprint end).
+1. Self-view webcam defaults to **top-right** of the stage (still draggable/resizable).
+2. Interviewer captions are **readable width** (not full-bleed over the character).
+3. **Two-line caption stack:** AI line + user line with slide/fade animation; user text updates live while they speak.
+4. Presage pane shows **all metrics** the product promises (face-derived + speech + vitals when available), with honest “unavailable” states — not silent omission.
+5. Opponent sprite shows **full head + top margin**; scaling is **height-only** (`object-fit: contain` / max-height), independent of stage width.
+6. Talking mouth animation starts only when **audio is actually playing** (ElevenLabs `HTMLAudioElement` or `speechSynthesis` start).
+7. **Continuous conversation:** user can talk without pressing Stop; end-of-turn is detected by silence; user can **barge in** while the AI speaks.
+8. **Prep screen** between Home “Get started” and the live black stage: scenario, opponent, and context — header dropdowns removed or disabled until prep is complete.
+9. **Presage reactions:** when stress / composure crosses thresholds, the interviewer can interject (short, in-character) without breaking the session.
 
 ---
 
-## 3. Route and navigation map
+## Phase 1 — Quick UI fixes (1–2 days)
 
-| User-facing URL (target) | Page component | Replaces (old Next) | Notes |
-|--------------------------|----------------|---------------------|--------|
-| `/` | `pages/Home.tsx` | `/` | Marketing + demo video modal |
-| `/start` | `pages/Setup.tsx` | `/setup` + `/interview` | Studio: config + live session |
-| `/results` | `pages/Results.tsx` | `/report` | Post-session report (wire to API) |
-| `/diag` | `Diag.tsx` | *(none)* | Keep for mic/webcam/TTS debugging |
+### 1.1 Camera tile → top-right
 
-**Redirects (optional but nice):**
+**Problem:** `.camtile` is `position: fixed; left: 28px; bottom: 88px` (`Setup.css` ~658–661). Reads as bottom-left over the footer.
 
-- `/setup` → `/start`
-- `/interview` → `/start` (session state is in-studio, not a separate route)
-- `/report` → `/results`
+**Implementation**
 
-Implement via Vite `historyApiFallback` + small redirect in `main.tsx` or hosting config (Vercel/Netlify redirects).
+1. Change default anchor to **top-right inside the stage** (preferred) or top-right viewport with stage-aware inset:
+   - Option A (recommended): `position: absolute` on `.camtile` within `.stage` so the tile scrolls with the stage and respects `overflow: hidden` clipping policy — if clipping is undesirable, use `overflow: visible` on `.stage` only for the tile layer.
+   - Default CSS: `top: 16px; right: 16px; left: auto; bottom: auto`.
+2. Update `CameraTile` in `Setup.tsx`:
+   - On first mount, if `pos === null`, do not rely on bottom-left CSS; optional `useLayoutEffect` to set initial `pos` from `getBoundingClientRect()` of `.stage` (top-right inset).
+   - Persist last position in `sessionStorage` key `speakup_camtile_pos` (optional, nice for repeat visits).
+3. Update responsive rules at bottom of `Setup.css` (media query ~875) so mobile keeps min touch target and does not cover Presage toggle.
 
-**Remove after merge:** duplicate `Report.tsx` at `src/Report.tsx` once `Results.tsx` renders backend data (or keep `/report` as alias that renders the same component as `/results`).
-
----
-
-## 4. Button and control inventory (must all behave correctly)
-
-Every control in the new UI should have an explicit **intended behavior** after integration. Locked controls stay locked until product enables more modes.
-
-### 4.1 `Home.tsx`
-
-| Control | Current behavior | Target behavior |
-|---------|------------------|-----------------|
-| Nav **Modes** | `navigate('/start')` | Unchanged |
-| Nav **Demo** | Opens YouTube modal | Unchanged; update `DEMO_VIDEO_ID` when real demo exists |
-| **Enter studio** | `navigate('/start')` | Unchanged |
-| **Get a demo** | Opens modal | Unchanged |
-| **Get started** | `navigate('/start')` | Unchanged |
-| Hero showcase click | Opens modal | Unchanged |
-| Modal scrim / close / Escape | Closes modal | Unchanged |
-| Footer | Static | Unchanged |
-
-### 4.2 `Setup.tsx` — scenario dropdown (locked items)
-
-| Option | `ready` | UI today | Target behavior |
-|--------|---------|----------|-----------------|
-| Salary Negotiation | `true` | Selectable | **Primary mode** — drives session + interviewer persona (§6) |
-| Mock Interview | `false` | `disabled`, sub “Coming soon” | Stay locked; `aria-disabled`, no navigation; optional toast on click attempt |
-| Public Speaking | `false` | locked | Same |
-| Thesis Defense | `false` | locked | Same |
-
-**Do not** enable locked modes until backend has scenario-specific prompts and QA; flipping `ready: true` without backend work is a regression.
-
-### 4.3 `Setup.tsx` — opponent dropdown (salary only)
-
-| Character | Target behavior |
-|-----------|-----------------|
-| University Recruiter | Selectable; sets persona metadata sent to session (§6) |
-| Senior Manager | Selectable |
-| HR Lead | Selectable |
-
-**Stage image:** During an active session, the opponent tile must use the **expression set** from §8 (not the static `/characters/*.png` poster). Posters stay for Home hero, dropdown previews, and Results avatars.
-
-When scenario is locked modes in the future, opponent list should be **mode-specific** (empty or hidden until mode selected).
-
-### 4.4 `Setup.tsx` — session lifecycle
-
-| Control | Current | Target |
-|---------|---------|--------|
-| Logo / brand home | `navigate('/')` | Unchanged |
-| **Start session** (overlay + footer) | Local `started` + timer | **On first start:** `POST /sessions` (optional job context), store `session_id` in `sessionStorage`; request mic+camera; `getSession` + TTS opening question via interview machine |
-| **End & get report** | `setSession` + `navigate('/results')` | Stop media/tracks; persist duration; `navigate('/results')`; report page loads `GET /sessions/{id}` |
-| **Select an opponent** (disabled start) | `disabled={!character}` | Unchanged until character chosen |
-| Timer | Local seconds | Start on successful session start; pause/stop on end |
-
-### 4.5 `Setup.tsx` — toolbar
-
-| Control | Current | Target |
-|---------|---------|--------|
-| **Mute / Unmute** | Toggles `micOn` only | Tie to interview machine: mute = disable MediaRecorder track / ignore STT; unmute = re-enable for LISTENING state |
-| **Stats** | Toggles Presage pane | Toggle live composure panel (§7) |
-| **Leave** | `navigate('/')` | Confirm if session active; stop streams; optional `clearStoredSessionId` only if abandoning |
-
-### 4.6 `Setup.tsx` — Presage pane
-
-| Control | Current | Target |
-|---------|---------|--------|
-| **Show stats** | Opens pane | Unchanged |
-| Close pane | Hides pane | Unchanged |
-| Metric rows | Static numbers | Bind to `useFaceComposure` + `useComposureSampler` and/or latest turn composure from backend sample during THINKING |
-
-### 4.7 `Setup.tsx` — `CameraTile`
-
-| Control | Current | Target |
-|---------|---------|--------|
-| Turn on / off camera | Local `getUserMedia` video only | Prefer **single** `useMediaStream` shared with interview machine (audio+video) to avoid double permission prompts |
-| Drag / resize | Local UI | Keep UX; ensure PiP does not cover opponent CTA on small screens (CSS already partly handles) |
-
-### 4.8 `Results.tsx`
-
-| Control | Current | Target |
-|---------|---------|--------|
-| Brand home | `/` | Unchanged |
-| **Practice again** | `/start` | Unchanged; clear in-memory session summary or start fresh `session_id` on next start |
-| **Back to home** | `/` | Unchanged |
-| Metrics / strengths / transcript | Static arrays | Derive from API turns (§7) with design-appropriate copy |
-
-### 4.9 `Diag.tsx` (retain)
-
-Keep for hackathon debugging (mic + webcam + TTS coexistence). Link from footer or dev-only query `?diag=1` if you want it hidden from demo users.
-
-### 4.10 Interview loop controls (from old Next — must exist in studio)
-
-The new studio footer does **not** yet expose the full turn state machine. Port behavior from `frontend/hooks/use-interview-machine.ts` and old `interview/page.tsx`:
-
-| State | Old control | Studio integration |
-|-------|-------------|-------------------|
-| IDLE | Join call | Covered by **Start session** |
-| ASKING | Answer now | Auto-advance to listen after TTS **or** show subtle “Your turn” chip (design may use auto-listen after `onended`) |
-| LISTENING | Stop & submit | Map to long-press mic or add **Submit answer** when design allows; minimum: end-of-utterance via stop recording |
-| THINKING | Processing | Disable mute/stats; show processing on stage |
-| End | End call | **End & get report** |
-
-Preserve invariant: **one audio direction at a time** (TTS vs recording).
+**Acceptance:** Fresh load places “You” tile top-right; drag still works; resize unchanged.
 
 ---
 
-## 5. Code migration map (old Next → new Vite)
+### 1.2 Caption layout (interviewer + user stack)
 
-Copy/adapt these into `frontend/src/` (suggested layout):
+**Problem:** `.stage-caption` uses `inset: auto 16px 72px` with no `max-width`, so long questions span nearly the full stage (`Setup.css` ~463–475).
+
+**Implementation**
+
+1. Add `frontend/src/components/StageCaptionStack.tsx` (or colocated in `Setup.tsx` if you want zero new files — component is still recommended for animation state).
+2. Structure:
+   ```text
+   .caption-stack (absolute, bottom: 72px, left: 50%, transform: translateX(-50%))
+     .caption-line.caption-line--ai
+     .caption-line.caption-line--user
+   ```
+3. CSS constraints:
+   - `max-width: min(42rem, calc(100% - 32px))` (tune in QA).
+   - `text-align: left` for readability; optional `text-wrap: balance` where supported.
+   - Do **not** cover the opponent tag pill at bottom center; keep `bottom` offset ≥ height of `.opponent-tag`.
+4. **AI caption:** bind to `currentQuestion` while `state === 'ASKING'` or hold last interviewer line until user speaks (product choice: **hold AI line until user caption appears**).
+5. **User caption:** bind to `browserSpeech.getTranscript()` (already wired in `Setup.tsx`) whenever `sessionLive && micOn`, not only after submit.
+
+**Acceptance:** Long Gemini strings wrap in a centered card; stage character remains visible; no overlap with camera tile (adjust `right` padding on stack when cam tile is on the right — e.g. `max-width` + `margin-right` when tile intersects).
+
+---
+
+### 1.3 Caption animations (user slides up, AI fades out)
+
+**Implementation**
+
+1. Track `captionGeneration` ref incremented on each AI question change and each finalized user utterance.
+2. CSS keyframes (prefer CSS over JS):
+   - **Enter (user):** `translateY(12px) → 0`, `opacity: 0 → 1`, ~280ms ease-out.
+   - **Exit (previous AI):** `translateY(0) → -8px`, `opacity: 1 → 0`, ~320ms; run when user line becomes non-empty or on `speech-start` from VAD (Phase 3).
+3. Use `prefers-reduced-motion: reduce` → cross-fade only, no translation.
+4. `aria-live="polite"` on the stack container; avoid announcing every partial STT token — announce on phrase boundaries (debounce 800ms) or on end-of-turn only.
+
+**Acceptance:** Visually matches “previous slides up and fades; new slides in from below” in user testing.
+
+---
+
+### 1.4 Opponent sprite scale (height-only, full head visible)
+
+**Problem:** `.opponent-video` is `width/height: 100%; object-fit: cover` (`Setup.css` ~385–389), which crops the head on tall expression PNGs.
+
+**Implementation**
+
+1. Replace cover with **contain** on height:
+   ```css
+   .opponent-video {
+     width: auto;
+     height: min(78vh, 100%);
+     max-height: calc(100% - 48px); /* top breathing room */
+     margin: 24px auto 0;
+     object-fit: contain;
+     object-position: top center;
+   }
+   ```
+2. Keep `.opponent` as positioning context; center horizontally with flex on a wrapper `.opponent-frame` if needed.
+3. **Do not** tie sprite width to stage width — only `max-height` and `object-position: top center`.
+4. QA all three characters × talking frames (`public/images/{recruiter,manager,hr}/`).
+
+**Acceptance:** Top of hair/head always visible with ≥24px padding; feet may letterbox — that is OK.
+
+---
+
+### 1.5 Sync talking animation to audible TTS
+
+**Problem:** `useCharacterExpression` alternates frames 1↔2 whenever `turnState === 'ASKING'` (`use-character-expression.ts` ~92–101), but `useInterviewMachine.ask()` sets `ASKING` **before** `audio.play()` resolves (`use-interview-machine.ts` ~123–131).
+
+**Implementation**
+
+1. Extend `useInterviewMachine.speak()`:
+   - Add optional callbacks: `onAudibleStart?: () => void` (fire on `audio.onplaying` or first `speechSynthesis` `onstart`).
+   - Keep `ASKING` for “interviewer turn” but add **`isSpeakingAudible: boolean`** state, or split into `ASKING_LOADING` | `ASKING_SPEAKING`.
+2. Prefer minimal API:
+   - `return { state, speakingPhase: 'idle' | 'loading' | 'audible' }` derived inside the hook.
+3. Update `useCharacterExpression` to animate mouth only when `speakingPhase === 'audible'` (or `ASKING_SPEAKING`).
+4. Optional: show a subtle “…” caption or neutral face during `loading` (no mouth flap).
+
+**Acceptance:** No mouth movement during TTS network latency; movement starts in sync with heard audio within one animation frame.
+
+---
+
+### 1.6 Presage pane — restore full metric set
+
+**Problem:** `usePresageMetrics` exposes five rows (Composure, Eye contact, Vocal steadiness, Pace, Filler words) but `ComposureSample.signals.vitals` is always `null` in `use-composure-sampler.ts`, and `FaceMetrics.raw` (blinks, look-away, instability) is never surfaced.
+
+**Target rows (show row with “—” if unavailable)**
+
+| Label | Source (priority order) |
+|-------|-------------------------|
+| Composure | Backend turn snapshot when `ASKING`; else live `sample.composure` |
+| Heart rate | Sidecar `pulse` / `hr_bpm`; else `signals.vitals.hr_bpm` |
+| Breathing rate | Sidecar `breathing` field (when sidecar exists) |
+| Eye contact | `signals.engagement` |
+| Expression stress | `signals.expression.stress` (rename “Vocal steadiness” if it was a proxy) |
+| Head stability | `FaceMetrics.raw.instability` inverted |
+| Gaze / look-away | `FaceMetrics.raw.lookAway` |
+| Blink rate | `FaceMetrics.raw.blinksPerMin` |
+| Pace (WPM) | existing speech hook |
+| Filler words | existing speech hook |
+| Signal source | Footer chip: `MediaPipe` / `Sidecar` / `Speech fallback` |
+
+**Implementation**
+
+1. **Frontend plumbing**
+   - Extend `useComposureSampler` / `readPresage()` to pass through `getMetrics()?.raw` into `signals` (add optional fields to `ComposureSignals` in `contracts.ts` — keep backward compatible).
+   - Add `usePresageVitals.ts` polling `GET ${VITE_API_URL}/debug/presage` every 2s while stats pane open **or** new lightweight `GET /sessions/{id}/vitals` (preferred for production; see Phase 4).
+2. **Map sidecar JSON** using fields already assumed in `backend/composure.py` (`pulse`, `breathing`, `expression`, `confidence`, `talking`). Parse `composure_seam_status().sidecar_latest` shape into UI rows when `sidecar_reachable`.
+3. Update `PresagePane` list rendering if row count exceeds viewport — `max-height` + `overflow-y: auto` on `.presage-list`.
+4. Update `presageStatus` string in `Setup.tsx` to mention sidecar vs MediaPipe explicitly.
+
+**Acceptance:** With only MediaPipe, user sees face + speech metrics. With sidecar on `:8100`, heart rate and breathing appear within 2s. No row silently disappears.
+
+---
+
+## Phase 2 — Prep screen before live call (1 day)
+
+### 2.1 Flow
 
 ```text
-frontend/src/
-  lib/
-    api.ts              # from old lib/api.ts — use import.meta.env.VITE_API_URL
-    api-types.ts
-    session-storage.ts  # motiontoff_session_id key unchanged
-    contracts.ts
-    draw-composure-chart.ts   # if chart kept inside Results or subpanel
-  hooks/
-    use-interview-machine.ts
-    use-media-stream.ts
-    use-face-composure.ts
-    use-composure-sampler.ts
-    use-character-expression.ts  # stage src from turn machine + last decision (§8.3)
-  voice/
-    stt.ts              # fetch(`${API}/api/stt`, ...) after backend move
-    tts.ts              # or inline in machine
-  config/
-    modes.ts            # MODES + SALARY_CHARACTERS from Setup.tsx
-    personas.ts         # map character id → prompt hints / display
-    character-expressions.ts  # image paths + director/state → frame (§8.2)
-  pages/
-    Home.tsx, Setup.tsx, Results.tsx  # design files
-  App.tsx, main.tsx
+Home “Get started” → /start (prep) → user completes steps → /start/call or in-page `studioPhase: 'live'`
 ```
 
-**Delete from new tree after port:**
+**Do not** start `getUserMedia`, `POST /sessions`, or the turn machine until prep is done.
 
-- `src/session.ts` in-memory summary → extend to store `session_id`, `mode`, `opponent`, `durationSec`, plus optional display fields for Results hero.
-- Duplicate `Report.tsx` / `Report.css` once Results is API-backed (or make Report a thin wrapper).
+### 2.2 Step model (from `c45be82`, updated)
 
-**Environment:**
+| Step | ID | Content |
+|------|-----|---------|
+| 1 | `scenario` | `MODES` grid (locked modes disabled) |
+| 2 | `opponent` | `SALARY_CHARACTERS` cards with poster + tone |
+| 3 | `context` | Job title + document upload (move **Add context** drawer here as inline panel) |
+| 4 | `ready` | Summary card: scenario, opponent, files count → **Enter studio** |
 
-| Variable | Purpose |
-|----------|---------|
-| `VITE_API_URL` | Default `http://localhost:8000` |
-| `ELEVENLABS_API_KEY` | Backend only if STT/TTS moved to FastAPI |
+Reuse CSS class names from old commit where possible: `.stepper`, `.mode-grid`, `.mode-card`, `.launch-*` → rename launch to `.prep-enter` to avoid implying auto-connect.
 
-Remove `NEXT_PUBLIC_*` from docs.
+### 2.3 Studio header after prep
 
----
+- While `studioPhase === 'prep'`: hide black stage / footer controls; show wizard full-page in SpeakUp chrome.
+- While `studioPhase === 'live'`: hide scenario/opponent dropdowns from `studio-top` (read-only summary chip: “Salary · HR Lead”); **Back** ends session with confirm dialog.
+- `App.tsx`: optional path `/start` vs `/start/live` — if staying single route, use `sessionStorage` `speakup_prep_complete` + query `?live=1` for bookmarking.
 
-## 6. Backend and persona alignment
+### 2.4 Migration from current `Setup.tsx`
 
-Today the backend has **no** `character_id` or `scenario` fields — only `job_title`, documents, and turns. The UI promises salary negotiation with three tones.
+1. Extract `StudioPrep.tsx` + `StudioLive.tsx` from `Setup.tsx` to keep file size manageable.
+2. Move `MODES` / `SALARY_CHARACTERS` to `frontend/src/config/modes.ts` (already partially there).
+3. `startSession()` only called from prep step **Enter studio** (not from overlay on stage).
 
-### Phase A — UI-only persona (fastest demo)
-
-- On `POST /sessions`, continue sending `{ job_title }` only; set `job_title` from opponent name or `"Salary negotiation — {character.name}"`.
-- Extend `interviewer.py` **client-side** is insufficient — for Gemini, add optional session settings:
-
-**Phase B — minimal backend extension (recommended before demo)**
-
-1. Extend `POST /sessions` body: `{ job_title?, scenario_id?, character_id? }`.
-2. Persist in `sessions.settings_json` (already exists).
-3. In `build_interviewer_context()` or `SYSTEM_INSTRUCTION`, branch on `character_id`:
-
-   | `character_id` | Prompt flavor |
-   |----------------|---------------|
-   | `recruiter` | Warm, encouraging salary conversation |
-   | `manager` | Formal, structure-focused |
-   | `hr` | Strict, budget pushback |
-
-4. Optionally swap `MOCK_QUESTIONS` / opening for salary-themed lines when `scenario_id === 'salary'`.
-
-No change to `/turn` response shape.
-
-### Document upload (old `/setup` feature)
-
-The new design has no upload UI. Pick one:
-
-1. **Collapsed “Add context” drawer** on `/start` before first Start (job title + file list) — reuses existing APIs.
-2. **Defer** — document in handoff as post-MVP; risk: weaker Gemini grounding vs old flow.
-
-Recommendation: **(1)** small drawer so backend document path is not orphaned.
+**Acceptance:** Clicking Get started never shows the black stage until scenario + opponent (+ context acknowledged) are chosen; matches old wizard UX with current design tokens.
 
 ---
 
-## 7. Results page — data binding spec
+## Phase 3 — Continuous conversation (2–4 days)
 
-Load `GET /sessions/{session_id}` (same as old report page).
+### 3.1 Product behavior
 
-| UI block | Source |
-|----------|--------|
-| Scenario / opponent / duration | `sessionStorage` summary + API `job_title` / settings |
-| Overall score ring | Average of `turns[].scores.overall` (0–100) or composure-weighted formula — document choice |
-| Delivery breakdown | Map rubric dimensions: structure, specificity, confidence; add composure average; derive “filler” from `red_flags` or placeholder until STT analytics exist |
-| What worked / Work on this | Top `evidence[]` / `red_flags[]` across turns; cap at 3 bullets each |
-| Transcript highlights | Last N turns: `question` → them, `answer` → you |
-| Composure curve | Optional section below hero: canvas chart from `draw-composure-chart.ts` (design may need a light-theme variant to match Results.css) |
+| Situation | Behavior |
+|-----------|----------|
+| AI speaking | User can **barge in** — duck/stop TTS, switch to listening |
+| User speaking | Show live user caption; do not call `/turn` yet |
+| User silent ≥ hangover | Finalize utterance → `THINKING` → STT → `/turn` → AI responds |
+| User never spoke | Do not submit empty turns (`TurnRequest` min_length=1) — stay in listen |
+| AI thinking | Mic can stay open but ignore VAD for turn submit (or mute graph) |
+| Manual fallback | Keep a small “Send now” text button in footer for noisy rooms / accessibility |
 
-Handle empty turns: show friendly empty state + link to `/start` (session ended before any answer).
+### 3.2 State machine changes
 
----
-
-## 8. Static assets
-
-### 8.1 Brand + character posters (ready to copy)
-
-Already in `speak-up-front-end-design/frontend/public/`:
-
-| Path | Use |
-|------|-----|
-| `brand/speakup-logo-horizontal.png`, `speakup-icon-white.png`, `speakup-app-icon.png`, … | Nav, favicon, stage watermark |
-| `characters/university-recruiter.png` | Poster / dropdown / Results avatar for **recruiter** |
-| `characters/senior-manager.png` | Poster for **manager** |
-| `characters/hr-lead.png` | Poster for **hr**; Home hero showcase |
-
-On cutover, copy the whole `public/` tree into `frontend/public/`. Retire Next `frontend/public/interviewer.png` after the studio uses expression art.
-
-### 8.2 Interview expression sets — repo [`images/`](images/)
-
-**Purpose:** Background-removed character art that changes **during the live session** on the studio stage (`Setup.tsx` opponent tile), driven by interview state and (optionally) Nemotron director actions.
-
-**Inventory (24 PNGs):** six folders × four frames each.
-
-| Source folder (repo root) | Maps to `character_id` | Mood prefix | Frames |
-|---------------------------|------------------------|-------------|--------|
-| `images/uni n rb/` | `recruiter` | `n` — neutral / engaged | 4 (`IMG_8967` … `8970`) |
-| `images/uni m rb/` | `recruiter` | `m` — stern / pushback | 4 (`IMG_8971` … `8974`) |
-| `images/senior n rb/` | `manager` | `n` | 4 (`IMG_8975` … `8978`) |
-| `images/senior m rb/` | `manager` | `m` | 4 (`IMG_8979` … `8982`) |
-| `images/hr n rb/` | `hr` | `n` | 4 (`IMG_8983` … `8986`) |
-| `images/hr m rb/` | `hr` | `m` | 4 (`IMG_8987` … `8990`) |
-
-**Semantics (verified on university recruiter set):**
-
-- **`n` (neutral):** approachable default — soft smile, listening, speaking with open mouth (positive/neutral reactions).
-- **`m` (mood / pushback):** sterner face — furrowed brow, tight mouth (use when the director escalates or scores dip).
-- **Four frames per mood:** subtle expression variants (idle, talking, pleased/surprised, etc.). Treat as ordered indices `0–3`, not separate filenames in UI code.
-
-Folder names use spaces (`hr m rb`); **do not reference them directly in URLs**. Normalize on copy, e.g.:
+Extend `TurnState` in `contracts.ts`:
 
 ```text
-frontend/public/images/
-  recruiter/
-    neutral-0.png … neutral-3.png
-    stern-0.png … stern-3.png
-  manager/
-    neutral-0.png …
-  hr/
-    neutral-0.png …
+IDLE → ASKING → LISTENING ⇄ THINKING → ASKING → … → REPORT
+         ↑          |
+         └─ INTERRUPTED (optional explicit state) or LISTENING with cancelToken on TTS
 ```
 
-Add a one-time script or manual rename when promoting assets; commit the normalized tree under `frontend/public/images/`.
+Implement in `use-interview-machine.ts`:
 
-### 8.3 Expression selection (implementation spec)
+- `stopSpeaking()` on barge-in (already exists).
+- `finalizeUserTurn(): void` — stop recorder, flush STT, transition to `THINKING`.
+- `armListenMode(): void` — called when AI finishes or barge-in completes.
 
-Add `character-expressions.ts` + `useCharacterExpression()` used by the studio stage `<img className="opponent-video" />`.
+### 3.3 End-of-utterance detection (recommended architecture)
 
-**Inputs:**
+**Tier 1 — Ship first (no new deps)**
 
-| Signal | Source |
+- `AnalyserNode` RMS on mic track from existing `MediaStream`.
+- Parameters (tune in `frontend/src/voice/vad-config.ts`):
+  - `speakThresholdDb`: ~−45 dBFS (calibrate noise floor for 300ms on listen start).
+  - `silenceHangoverMs`: **900–1200** (negotiation pacing; user may pause to think).
+  - `minSpeechMs`: **400** (ignore coughs).
+  - `maxUtteranceMs`: **120000** (force finalize).
+- Pre-speech ring buffer **300ms** when starting MediaRecorder segment (concatenate chunks) to avoid clipped first syllable.
+
+**Tier 2 — Optional upgrade**
+
+- `@ricky0123/vad-web` (Silero in WASM) in a Web Worker for noisy environments — same `speech-end` → `finalizeUserTurn` contract.
+
+**References:** hysteresis + hangover patterns (Silero VAD configs: `minSilenceDurationMs`, `speechPadMs`); RMS kit patterns (`silenceDetectionDelayMs`).
+
+### 3.4 STT strategy during continuous mode
+
+| `serverSttAvailable` | Behavior |
+|---------------------|----------|
+| `true` | MediaRecorder collects segment between `speech-start` and `speech-end`; POST blob to `/api/stt` on finalize |
+| `false` | Keep `useBrowserSpeechCapture` running; on finalize, `stop()` + `getTranscript()` (current path) |
+
+Partial transcripts drive **user caption only**; `/turn` uses finalized text once.
+
+### 3.5 Barge-in
+
+1. While `speakingPhase === 'audible'`, run lightweight VAD on mic.
+2. If speech detected for ≥ `bargeInMinMs` (200–300ms):
+   - `stopSpeaking()` + increment speak token.
+   - `listen()` / `armListenMode()`.
+   - Set character expression to listening frame (`useCharacterExpression` already handles `LISTENING`).
+3. Ducking: optional `audio.volume = 0.2` for 150ms before stop — polish only.
+
+### 3.6 UI changes
+
+- Remove primary **Stop & submit** (`Setup.tsx` ~1754) or demote to secondary “Send now”.
+- Footer mic stays toggle; state pill text: “Listening…” / “Interviewer speaking” / “Processing…”.
+- Disable scenario dropdowns during live session (already partially done).
+
+### 3.7 Backend
+
+No schema change required for basic continuous mode if finalized text still posts to `POST /turn`.
+
+Optional: accept `answer: ""` with `meta.skip: true` — **avoid** unless needed; prefer frontend gate.
+
+**Acceptance:** User completes a full exchange without clicking Stop; barge-in stops AI mid-sentence; silence triggers next question; empty silence does not 400 the API.
+
+---
+
+## Phase 4 — Presage-driven interviewer reactions (2–3 days)
+
+### 4.1 Goals
+
+When live signals show elevated stress, anger proxy, or collapsing composure, the interviewer may **interject** briefly (“Let’s take a breath”, “I notice this is tense — walk me through your reasoning”) without advancing the main rubric turn.
+
+### 4.2 Signal sources
+
+| Source | When | Fields |
+|--------|------|--------|
+| MediaPipe | Always in browser | `stress`, `engagement`, `raw.exprStress` |
+| Sidecar | When `:8100` reachable | `pulse`, `expression`, `confidence` |
+| Turn composure | After each answer | `decision.input_snapshot.composure` |
+
+Define thresholds in `frontend/src/config/composure-thresholds.ts` (and mirror constants server-side):
+
+```ts
+export const INTERJECT = {
+  stressHigh: 0.72,        // sustained 3s
+  composureLow: 0.38,      // sustained 3s
+  hrElevated: 100,         // sidecar pulse
+  cooldownMs: 45000,       // per session
+  maxInterjectsPerSession: 4,
+}
+```
+
+Use **sustained** breach (≥3s at 1Hz sampler) to avoid flicker.
+
+### 4.3 API design
+
+**New endpoint** (recommended):
+
+`POST /sessions/{session_id}/interject`
+
+Request:
+
+```json
+{
+  "trigger": "high_stress",
+  "snapshot": {
+    "composure": 0.41,
+    "stress": 0.78,
+    "hr_bpm": 104,
+    "source": "mediapipe"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "text": "Short in-character interjection.",
+  "resume": true
+}
+```
+
+Implementation:
+
+1. `interviewer.py`: `generate_interjection(session_id, trigger, snapshot)` — Gemini when keyed; mock lines when not.
+2. `main.py`: rate-limit per session in SQLite (`interject_count`, `last_interject_at` in settings_json or new columns).
+3. **Does not** append a full turn to history unless you want it in report — decision:
+   - **Option A (simpler):** interjections are audio-only overlays, not stored.
+   - **Option B (richer report):** store as `turn_type: "interjection"` in repository — more work.
+
+### 4.4 Frontend orchestration
+
+1. `useComposureReactions.ts` watches `composureSample` + optional vitals poll.
+2. On trigger + cooldown OK:
+   - If AI speaking → queue interjection after TTS ends **or** merge barge-in policy (product: allow interjection to interrupt user only when stress critical).
+   - Call `/interject`, then `ask(text)` with flag `isInterjection: true` (shorter caption styling).
+3. Pass `lastInterjection` into `useCharacterExpression` for stern vs neutral.
+
+### 4.5 Director / Nemotron
+
+Keep Nemotron director on full `/turn` only. Interjections are **interviewer-only** copy to avoid doubling control planes.
+
+**Acceptance:** Simulated high stress (or sidecar test data) produces at most one interjection per cooldown; session continues; report still makes sense.
+
+---
+
+## Phase 5 — Sidecar & vitals plumbing (parallel / optional)
+
+Until `presage_smoke` succeeds, browser-only metrics still satisfy Phase 1.6 labels with “Sidecar offline”.
+
+1. Implement minimal HTTP sidecar on `127.0.0.1:8100`:
+   - `GET /health`
+   - `GET /composure` → JSON matching `to_composure()` in `composure.py`
+2. Add `GET /vitals` returning raw cardio/breathing for the UI pane (even if composure stays scalar).
+3. Proxy from FastAPI: `GET /sessions/{id}/vitals` reads sidecar once, adds CORS safety — frontend should not call `:8100` directly in production.
+
+Document in `handoff.md` when done.
+
+---
+
+## Implementation order (recommended)
+
+```text
+Phase 1.1–1.5  (camera, captions, sprite, TTS sync)     ← same PR OK
+Phase 1.6        (Presage metrics completeness)
+Phase 2          (prep wizard)
+Phase 3          (continuous conversation + VAD)
+Phase 4          (interjections) — depends on 1.6 signals
+Phase 5          (sidecar) — parallel if Windows box available
+```
+
+---
+
+## Testing checklist
+
+### Manual (localhost)
+
+- [ ] `npm run dev` + uvicorn; `/start` prep → live session.
+- [ ] Camera default top-right; drag/resize; no overlap with stats toggle.
+- [ ] Long interviewer question wraps; user caption animates on speak.
+- [ ] All three characters: head visible, talking sync with audio.
+- [ ] Continuous mode: silence ends turn; barge-in stops AI.
+- [ ] Without `ELEVENLABS_API_KEY`: browser TTS still syncs animation via `onstart`.
+- [ ] With mock keys only: interjection mock path fires on forced threshold in dev toggle.
+- [ ] `npm run build` clean.
+
+### Automated (add as you go)
+
+- Unit test: VAD hangover state machine (pure TS).
+- Unit test: `speakingPhase` transitions with mocked `Audio` events.
+
+---
+
+## Files to touch (summary)
+
+| Change | Files |
 |--------|--------|
-| Character | `charId` (`recruiter` \| `manager` \| `hr`) |
-| Turn state | `useInterviewMachine` (`IDLE`, `ASKING`, `LISTENING`, `THINKING`) |
-| Last director action | `turns[].decision.action` from last successful `POST …/turn` |
-
-**Suggested mapping (tune in implementation):**
-
-| Condition | Mood | Frame index |
-|-----------|------|-------------|
-| Pre-start / IDLE | `n` | `0` (default smile) |
-| ASKING (TTS playing) | current mood | `1` or alternate `1↔2` on a ~400ms timer for “talking” |
-| LISTENING | `n` | `0` or `2` (attentive) |
-| THINKING | keep previous mood | `0` |
-| After turn: `press_harder` or `curveball` | `m` | `0`–`2` by `scores.overall` (lower → higher index) |
-| After turn: `ease_off` or `follow_up` | `n` | `2` or `3` (warmer) |
-| After turn: `move_on` | `n` | `0` |
-
-Hold the `m` mood for at least one turn after a hard action so the UI does not flicker; decay back to `n` on `ease_off` or after two consecutive `follow_up` / `move_on`.
-
-**Pre-start:** Continue showing `SALARY_CHARACTERS[].img` (`/characters/…`) until **Start session**; then switch to `/images/{character}/…` expression paths.
-
-**Accessibility:** Keep meaningful `alt` on the stage image (`{name}, {tone}`); expression changes are decorative unless you expose a live region for screen readers (optional).
-
-### 8.4 Asset checks
-
-- [x] All `brand/` and `characters/` files from design package present under `frontend/public/`
-- [x] All 24 expression PNGs present under normalized `frontend/public/images/{recruiter,manager,hr}/`
-- [x] No broken stage image when switching opponents mid-setup (reset expression state when `charId` changes)
+| Camera / captions / sprite CSS | `frontend/src/pages/Setup.css` |
+| Studio layout & prep split | `frontend/src/pages/Setup.tsx` → `StudioPrep.tsx`, `StudioLive.tsx` |
+| Caption component | `frontend/src/components/StageCaptionStack.tsx` |
+| TTS audible phase | `frontend/src/hooks/use-interview-machine.ts`, `use-character-expression.ts` |
+| Metrics | `use-presage-metrics.ts`, `use-composure-sampler.ts`, `contracts.ts` |
+| VAD / continuous | `frontend/src/voice/vad.ts`, `vad-config.ts`, `use-interview-machine.ts` |
+| Prep routing | `frontend/src/App.tsx`, `Home.tsx` |
+| Interject API | `backend/main.py`, `interviewer.py`, `repository.py` (optional) |
+| Vitals proxy | `backend/main.py`, `composure.py` |
 
 ---
 
-## 9. Implementation phases (ordered)
-
-### Phase 0 — Prep (0.5 day)
-
-- [x] Tag current `main` or branch `legacy-next-frontend`
-- [x] Copy design `public/` + normalize repo [`images/`](images/) → `frontend/public/images/` (§8.2)
-- [x] Agree STT/TTS hosting (backend vs other) — **FastAPI** `POST /api/stt` + `POST /api/tts`, key in `backend/.env` (see `backend/.env.example`)
-
-### Phase 1 — Structural replace (0.5 day)
-
-- [x] Replace `frontend/` with Vite SpeakUp tree
-- [x] Root `package.json` scripts or document `cd frontend && npm run dev`
-- [x] Add `frontend/.env.example` with `VITE_API_URL`
-- [x] Route aliases `/setup`, `/interview`, `/report`
-
-### Phase 2 — Session + API shell (1 day)
-
-- [x] Port `lib/api*.ts`, `session-storage.ts`
-- [x] Wire **Start session** → create session + health check
-- [x] Wire **End & get report** → navigate with `session_id`
-- [x] Results: load API; replace static transcript/metrics with computed data
-- [x] Locked scenario modes: verify `disabled` + keyboard no-op
-
-### Phase 3 — Voice + turn loop (1–1.5 days)
-
-- [x] Move STT/TTS to backend (or interim proxy)
-- [x] Port `use-interview-machine` + media hooks into Setup stage
-- [x] Connect opponent name to stage; wire **expression sets** (§8.3) to turn state + director actions
-- [x] Error surfaces (API offline, no speech, STT missing key)
-
-### Phase 4 — Composure UX (0.5–1 day)
-
-- [x] Port MediaPipe hooks; feed Presage pane live values
-- [x] Align with backend composure on `/turn` (display last sample or live face metrics)
-- [x] Remove static `PRESAGE_METRICS` constants
-
-### Phase 5 — Persona + optional upload (0.5 day)
-
-- [x] `settings_json` for `character_id` / `scenario_id`
-- [x] Interviewer prompt variants
-- [x] Optional context drawer for documents
-
-### Phase 6 — Cleanup and docs (0.5 day)
-
-- [x] Delete Next artifacts (`.next`, tailwind config if unused, `app/` tree)
-- [x] Update [handoff.md](handoff.md): port `5173`, routes, env vars
-- [x] Remove or archive `speak-up-front-end-design/` duplicate backend
-- [x] Smoke test checklist (§10)
-
----
-
-## 10. Acceptance / smoke tests
-
-Run backend on `:8000`, frontend on `:5173`.
-
-1. **Zero keys:** Home → Start → pick HR Lead → Start session → speak or mock path → End → Results shows turns from mock interviewer (not static TRANSCRIPT).
-2. **Locked modes:** Mock Interview / Public Speaking / Thesis — not selectable; no session start when only locked mode would apply.
-3. **Leave mid-session:** Streams stop; no orphaned mic icon in browser tab.
-4. **Refresh on Results:** With same `session_id` in `sessionStorage`, report reloads from API.
-5. **Diag:** `/diag` still runs TTS + mic test.
-6. **CORS:** No browser errors from `localhost:5173` to `:8000`.
-7. **With `GEMINI_API_KEY`:** Opponent tone noticeably shifts questions (after Phase 5).
-8. **With `ELEVENLABS_API_KEY`:** TTS/STT path works through new proxy.
-9. **Assets:** Brand, character posters, and all expression PNGs load (network 200).
-10. **Expressions:** Start session as HR Lead → neutral face; complete a turn that returns `press_harder` (or mock) → stage switches to stern set; TTS playing uses a “talking” frame.
-
----
-
-## 11. Risks and mitigations
+## Risks & mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| Expression flicker on every turn | Minimum hold time for `m` mood; debounce frame index |
-| Spaces in `images/* rb/` folder names | Normalize paths in §8.2 before shipping |
-| Double `getUserMedia` (CameraTile vs interview) | Single media hook shared |
-| Salary UI vs mock-interview backend copy | Phase B settings + prompt branching |
-| Results design vs dark composure chart | Themed chart or inset card |
-| ElevenLabs key exposure if proxied wrong | Backend-only key, never `VITE_*` secret |
-| Removing document upload | Context drawer or explicit “MVP without upload” in handoff |
+| VAD false positives in noisy hackathon rooms | Noise floor calibration + manual “Send now”; Tier 2 Silero |
+| Double camera (MediaPipe + Presage sidecar) | Document mutual exclusion per `presage-step5.md`; disable self-view when sidecar owns camera |
+| Interjections feel naggy | Cooldown + sustained thresholds + max per session |
+| Prep wizard lengthens demo | Default selections remembered in `localStorage` |
+| Large `Setup.tsx` refactor | Split prep/live first, then features |
 
 ---
 
-## 12. Out of scope (track elsewhere)
+## Out of scope (this plan)
 
-- Enabling locked scenarios (Mock Interview, Public Speaking, Thesis) — product + backend prompts
-- Presage sidecar `:8100` — see [docs/presage-step5.md](docs/presage-step5.md)
-- Production deploy (Vercel/Netlify + `CORS_EXTRA_ORIGINS`)
-- Deleting `speak-up-front-end-design/plan.md` (old backend checklist); this root `plan.md` supersedes for **frontend integration** only
+- Production deploy / CORS (`handoff.md` backlog)
+- Enabling locked scenario modes (`interview`, `speaking`, `thesis`) beyond UI placeholders
+- Replacing MediaPipe with Presage for authoritative report composure (backend turn store remains source of truth for scoring)
 
 ---
 
-## 13. Definition of done
-
-- [x] `frontend/` is the Vite SpeakUp app; no Next.js dependency in root workflow
-- [x] All controls in §4 have defined, implemented behavior (locked remain locked)
-- [x] Full user path works against root `backend/` with mocks and with keys when set
-- [x] Old Next `app/*` interview/setup/report pages are gone
-- [x] handoff.md reflects new routes, ports, and env
-- [x] `speak-up-front-end-design/` is either removed or clearly marked archived post-merge
-- [x] Live studio uses [`images/`](images/) expression art; posters only for marketing / picker / report
+*Replaces the previous SpeakUp **frontend integration** checklist (Phases 0–6 complete). Integration history remains in git; runtime docs stay in [handoff.md](handoff.md).*

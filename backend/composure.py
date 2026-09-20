@@ -11,7 +11,33 @@ import re
 from typing import Any
 
 MOCK_COMPOSURE = 0.72
-SIDECAR_URL = os.getenv("PRESAGE_SIDECAR_URL", "http://127.0.0.1:8100/composure")
+
+
+def sidecar_base_url() -> str:
+    explicit = os.getenv("PRESAGE_SIDECAR_BASE", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    custom = os.getenv("PRESAGE_SIDECAR_URL", "").strip()
+    if custom.endswith("/composure"):
+        return custom[: -len("/composure")]
+    if custom:
+        return custom.rstrip("/")
+    return "http://127.0.0.1:8100"
+
+
+def sidecar_composure_url() -> str:
+    custom = os.getenv("PRESAGE_SIDECAR_URL", "").strip()
+    if custom:
+        return custom
+    return f"{sidecar_base_url()}/composure"
+
+
+def sidecar_vitals_url() -> str:
+    return f"{sidecar_base_url()}/vitals"
+
+
+def sidecar_health_url() -> str:
+    return f"{sidecar_base_url()}/health"
 
 
 def presage_configured() -> bool:
@@ -108,15 +134,92 @@ def fallback_composure_from_speech(
     return max(0.0, min(1.0, base))
 
 
-def _fetch_sidecar_composure() -> float:
-    import urllib.error
+def _fetch_json(url: str, timeout: float = 0.35) -> dict[str, Any]:
+    import json
     import urllib.request
 
-    with urllib.request.urlopen(SIDECAR_URL, timeout=0.35) as resp:
-        import json
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        payload = json.loads(resp.read().decode())
+    if not isinstance(payload, dict):
+        raise ValueError("sidecar_invalid_json")
+    return payload
 
-        raw = json.loads(resp.read().decode())
+
+def probe_sidecar() -> tuple[bool, dict[str, Any] | None, str | None]:
+    """GET /composure once — used by debug and session vitals proxy."""
+    try:
+        raw = _fetch_json(sidecar_composure_url())
+        return True, raw, None
+    except Exception as exc:
+        return False, None, str(exc)
+
+
+def fetch_sidecar_vitals() -> dict[str, Any]:
+    """GET /vitals from sidecar; falls back to composure payload fields."""
+    try:
+        return _fetch_json(sidecar_vitals_url())
+    except Exception:
+        reachable, raw, _err = probe_sidecar()
+        if not reachable or not raw:
+            raise
+        pulse = raw.get("pulse")
+        breathing = raw.get("breathing", raw.get("breathing_rate"))
+        return {
+            "pulse": pulse,
+            "hr_bpm": pulse,
+            "breathing": breathing,
+            "breathing_rate": raw.get("breathing_rate", breathing),
+            "source": raw.get("source"),
+        }
+
+
+def _fetch_sidecar_composure() -> float:
+    reachable, raw, _err = probe_sidecar()
+    if not reachable or not raw:
+        raise RuntimeError("sidecar_unreachable")
     return to_composure(raw)
+
+
+def session_vitals_payload(session_id: str) -> dict[str, Any]:
+    """CORS-safe vitals for studio UI (browser never calls :8100)."""
+    mode = _effective_composure_mode()
+    reachable, composure_raw, error = probe_sidecar()
+    pulse: float | int | None = None
+    breathing: float | int | None = None
+    vitals_source: str | None = None
+
+    if reachable:
+        try:
+            vitals_raw = fetch_sidecar_vitals()
+            pulse = vitals_raw.get("pulse") or vitals_raw.get("hr_bpm")
+            breathing = vitals_raw.get("breathing") or vitals_raw.get("breathing_rate")
+            src = vitals_raw.get("source")
+            vitals_source = str(src) if src is not None else None
+        except Exception:
+            pulse = composure_raw.get("pulse") if composure_raw else None
+            breathing = (
+                composure_raw.get("breathing") if composure_raw else None
+            ) or (composure_raw.get("breathing_rate") if composure_raw else None)
+
+    composure_scalar: float | None = None
+    if reachable and composure_raw:
+        try:
+            composure_scalar = to_composure(composure_raw)
+        except ValueError:
+            composure_scalar = None
+
+    return {
+        "session_id": session_id,
+        "composure_mode": mode,
+        "sidecar_reachable": reachable,
+        "sidecar_error": error,
+        "sidecar_base": sidecar_base_url(),
+        "pulse": pulse,
+        "breathing": breathing,
+        "vitals_source": vitals_source,
+        "composure_scalar": composure_scalar,
+        "composure_raw": composure_raw,
+    }
 
 
 def sample_composure(answer: str = "") -> float:
@@ -148,20 +251,7 @@ def composure_seam_status(answer: str = "") -> dict[str, Any]:
     """Diagnostics for step 5 / presage integration."""
     mode = _effective_composure_mode()
     explicit_mode = os.getenv("COMPOSURE_MODE", "").strip().lower() or None
-    sidecar_reachable = False
-    sidecar_error: str | None = None
-    sidecar_raw: dict[str, Any] | None = None
-
-    try:
-        import json
-        import urllib.error
-        import urllib.request
-
-        with urllib.request.urlopen(SIDECAR_URL, timeout=0.35) as resp:
-            sidecar_raw = json.loads(resp.read().decode())
-        sidecar_reachable = True
-    except Exception as exc:
-        sidecar_error = str(exc)
+    sidecar_reachable, sidecar_raw, sidecar_error = probe_sidecar()
 
     return {
         "composure_mode": mode,
@@ -171,11 +261,14 @@ def composure_seam_status(answer: str = "") -> dict[str, Any]:
         "mock_value": MOCK_COMPOSURE,
         "sample_composure_output": sample_composure(answer),
         "fallback_preview": fallback_composure_from_speech(answer or "Um, I guess I led the migration."),
-        "sidecar_url": SIDECAR_URL,
+        "sidecar_url": sidecar_composure_url(),
+        "sidecar_base": sidecar_base_url(),
+        "sidecar_vitals_url": sidecar_vitals_url(),
         "sidecar_reachable": sidecar_reachable,
         "sidecar_error": sidecar_error,
         "sidecar_latest": sidecar_raw,
         "integration_plan": "sidecar_on_8100_then_auto_mode",
         "smoke_test": "presage_smoke/run_smoke.ps1",
+        "sidecar_run": "cd backend && python -m presage_sidecar",
         "docs": "docs/presage-step5.md",
     }

@@ -4,10 +4,16 @@ export type ComposureSource = 'presage' | 'fallback'
 export interface ComposureSignals {
   expression: { neutral: number; stress: number } | null
   engagement: number | null
-  vitals: { hr_bpm: number } | null
+  vitals: { hr_bpm: number; breathing_rate?: number } | null
   filler_rate: number | null
   answer_latency_ms: number | null
   speech_rate_wpm: number | null
+  /** MediaPipe-derived raw face metrics when available. */
+  faceRaw?: {
+    lookAway: number
+    instability: number
+    blinksPerMin: number
+  } | null
 }
 
 /** Unified composure sample (MediaPipe webcam or synthetic until face is visible). */

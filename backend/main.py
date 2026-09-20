@@ -2,6 +2,8 @@ import asyncio
 
 import os
 
+import time
+
 from contextlib import asynccontextmanager
 
 from typing import Any
@@ -20,13 +22,20 @@ from pydantic import BaseModel, Field
 
 
 
-from composure import composure_seam_status, sample_composure
+from composure import composure_seam_status, sample_composure, session_vitals_payload
 
 from director import decide
 
 from documents import extract_text, validate_upload
 
-from interviewer import next_turn, opening_question
+from composure_thresholds import (
+    ALLOWED_INTERJECT_TRIGGERS,
+    INTERJECT_COOLDOWN_MS,
+    INTERJECT_MAX_PER_SESSION,
+    SETTINGS_INTERJECT_COUNT,
+    SETTINGS_LAST_INTERJECT_AT_MS,
+)
+from interviewer import generate_interjection, next_turn, opening_question
 
 from judge import score
 
@@ -53,6 +62,8 @@ from repository import (
     get_session_settings,
 
     session_exists,
+
+    set_session_setting,
 
 )
 
@@ -272,6 +283,20 @@ class TurnRequest(BaseModel):
     answer: str = Field(..., min_length=1)
 
 
+class InterjectRequest(BaseModel):
+
+    trigger: str = Field(..., min_length=1)
+
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class InterjectResponse(BaseModel):
+
+    text: str
+
+    resume: bool = True
+
+
 
 
 
@@ -319,6 +344,13 @@ def get_session_by_id(session_id: str):
 def get_session_report(session_id: str):
 
     return _session_payload(session_id)
+
+
+@app.get("/sessions/{session_id}/vitals")
+def get_session_vitals(session_id: str):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
+    return session_vitals_payload(session_id)
 
 
 
@@ -457,6 +489,42 @@ async def _execute_turn(session_id: str, answer: str) -> dict[str, Any]:
 async def post_session_turn(session_id: str, body: TurnRequest):
 
     return await _execute_turn(session_id, body.answer)
+
+
+@app.post("/sessions/{session_id}/interject", response_model=InterjectResponse)
+def post_session_interject(session_id: str, body: InterjectRequest):
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    trigger = body.trigger.strip()
+    if trigger not in ALLOWED_INTERJECT_TRIGGERS:
+        raise HTTPException(status_code=400, detail="invalid_trigger")
+
+    settings = get_session_settings(session_id)
+    count_raw = settings.get(SETTINGS_INTERJECT_COUNT, 0)
+    try:
+        interject_count = int(count_raw)
+    except (TypeError, ValueError):
+        interject_count = 0
+
+    if interject_count >= INTERJECT_MAX_PER_SESSION:
+        raise HTTPException(status_code=429, detail="interject_limit_reached")
+
+    last_raw = settings.get(SETTINGS_LAST_INTERJECT_AT_MS)
+    try:
+        last_ms = int(last_raw)
+    except (TypeError, ValueError):
+        last_ms = 0
+
+    now_ms = int(time.time() * 1000)
+    if last_ms and now_ms - last_ms < INTERJECT_COOLDOWN_MS:
+        raise HTTPException(status_code=429, detail="interject_cooldown")
+
+    result = generate_interjection(session_id, trigger, body.snapshot)
+    set_session_setting(session_id, SETTINGS_INTERJECT_COUNT, interject_count + 1)
+    set_session_setting(session_id, SETTINGS_LAST_INTERJECT_AT_MS, now_ms)
+
+    return InterjectResponse(text=result["text"], resume=bool(result.get("resume", True)))
 
 
 

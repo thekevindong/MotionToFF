@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import type { InterjectTrigger } from '../config/composure-thresholds'
+import type { SpeakingPhase } from './use-interview-machine'
 import type { TurnState } from '../lib/contracts'
 import {
   expressionImageUrl,
@@ -21,6 +23,8 @@ export function useCharacterExpression(
   sessionActive: boolean,
   turnState: TurnState,
   lastDirector: DirectorSignal | null,
+  speakingPhase: SpeakingPhase = 'idle',
+  lastInterjection: InterjectTrigger | null = null,
 ) {
   const [mood, setMood] = useState<ExpressionMood>('neutral')
   const [frame, setFrame] = useState(0)
@@ -33,6 +37,14 @@ export function useCharacterExpression(
     setMood('neutral')
     setFrame(0)
   }, [charId])
+
+  useEffect(() => {
+    if (!lastInterjection) return
+    setMood('stern')
+    setFrame(2)
+    sternHoldRef.current = 3
+    softStreakRef.current = 0
+  }, [lastInterjection])
 
   useEffect(() => {
     if (!lastDirector?.action) return
@@ -90,7 +102,7 @@ export function useCharacterExpression(
   }, [charId, sessionActive, turnState, mood, lastDirector?.overall])
 
   useEffect(() => {
-    if (!sessionActive || !charId || turnState !== 'ASKING') return
+    if (!sessionActive || !charId || turnState !== 'ASKING' || speakingPhase !== 'audible') return
     let alt = 1
     setFrame(1)
     const id = window.setInterval(() => {
@@ -98,7 +110,7 @@ export function useCharacterExpression(
       setFrame(alt)
     }, 400)
     return () => window.clearInterval(id)
-  }, [charId, sessionActive, turnState])
+  }, [charId, sessionActive, turnState, speakingPhase])
 
   const src = charId
     ? expressionImageUrl(charId, sessionActive ? mood : 'neutral', sessionActive ? frame : 0)

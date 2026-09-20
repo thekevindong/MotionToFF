@@ -1,0 +1,15 @@
+"""Shared Presage reaction thresholds (mirror frontend composure-thresholds.ts)."""
+
+from __future__ import annotations
+
+INTERJECT_STRESS_HIGH = 0.72
+INTERJECT_COMPOSURE_LOW = 0.38
+INTERJECT_HR_ELEVATED = 100
+INTERJECT_COOLDOWN_MS = 45_000
+INTERJECT_MAX_PER_SESSION = 4
+INTERJECT_SUSTAINED_SEC = 3
+
+ALLOWED_INTERJECT_TRIGGERS = frozenset({"high_stress", "composure_low", "hr_elevated"})
+
+SETTINGS_INTERJECT_COUNT = "interject_count"
+SETTINGS_LAST_INTERJECT_AT_MS = "last_interject_at_ms"

@@ -79,6 +79,36 @@ export type TurnResponse = {
   next_question: InterviewerLine
 }
 
+export type InterjectTrigger = 'high_stress' | 'composure_low' | 'hr_elevated'
+
+export type InterjectRequest = {
+  trigger: InterjectTrigger
+  snapshot: {
+    composure: number
+    stress: number
+    hr_bpm?: number | null
+    source: string
+  }
+}
+
+export type InterjectResponse = {
+  text: string
+  resume: boolean
+}
+
+export type SessionVitalsResponse = {
+  session_id: string
+  composure_mode: string
+  sidecar_reachable: boolean
+  sidecar_error: string | null
+  sidecar_base?: string
+  pulse: number | null
+  breathing: number | null
+  vitals_source: string | null
+  composure_scalar: number | null
+  composure_raw: Record<string, unknown> | null
+}
+
 export type HealthResponse = { ok: boolean }
 
 export type VoiceStatusResponse = { stt: boolean; tts: boolean }

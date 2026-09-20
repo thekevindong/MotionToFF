@@ -9,7 +9,14 @@ type View = 'home' | 'start' | 'results'
 
 function viewFromPath(path: string): View {
   const clean = path.replace(/\/$/, '') || '/'
-  if (clean === '/start' || clean === '/setup' || clean === '/interview') return 'start'
+  if (
+    clean === '/start' ||
+    clean === '/start/live' ||
+    clean === '/start/call' ||
+    clean === '/setup' ||
+    clean === '/interview'
+  )
+    return 'start'
   if (clean === '/results' || clean === '/report') return 'results'
   return 'home'
 }

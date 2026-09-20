@@ -1,6 +1,9 @@
 import type {
   CreateSessionResponse,
   HealthResponse,
+  InterjectRequest,
+  InterjectResponse,
+  SessionVitalsResponse,
   SessionResponse,
   TurnResponse,
   CreateSessionInput,
@@ -90,6 +93,29 @@ export async function postTurn(answer: string, sessionId?: string): Promise<Turn
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answer: answer.trim() }),
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function getSessionVitals(sessionId: string): Promise<SessionVitalsResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/vitals`)
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  return res.json()
+}
+
+export async function postInterject(
+  sessionId: string,
+  body: InterjectRequest,
+): Promise<InterjectResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/interject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     throw new Error(await parseError(res))

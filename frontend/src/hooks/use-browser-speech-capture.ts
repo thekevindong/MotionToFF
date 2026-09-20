@@ -10,10 +10,12 @@ import {
 export function useBrowserSpeechCapture(active: boolean) {
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null)
   const transcriptRef = useRef('')
+  const interimRef = useRef('')
   const wantActiveRef = useRef(false)
 
   const reset = useCallback(() => {
     transcriptRef.current = ''
+    interimRef.current = ''
   }, [])
 
   const stop = useCallback(() => {
@@ -30,6 +32,13 @@ export function useBrowserSpeechCapture(active: boolean) {
   }, [])
 
   const getTranscript = useCallback(() => transcriptRef.current.trim(), [])
+
+  const getLiveCaption = useCallback(() => {
+    const final = transcriptRef.current.trim()
+    const interim = interimRef.current.trim()
+    if (!interim) return final
+    return final ? `${final} ${interim}` : interim
+  }, [])
 
   useEffect(() => {
     wantActiveRef.current = active
@@ -52,16 +61,21 @@ export function useBrowserSpeechCapture(active: boolean) {
     rec.lang = 'en-US'
 
     rec.onresult = (ev: SpeechRecognitionEvent) => {
-      let chunk = ''
+      let finalChunk = ''
+      let interimChunk = ''
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const result = ev.results[i]
+        const text = result[0]?.transcript ?? ''
         if (result.isFinal) {
-          chunk += result[0]?.transcript ?? ''
+          finalChunk += text
+        } else {
+          interimChunk += text
         }
       }
-      if (chunk) {
-        transcriptRef.current = `${transcriptRef.current} ${chunk}`.trim()
+      if (finalChunk) {
+        transcriptRef.current = `${transcriptRef.current} ${finalChunk}`.trim()
       }
+      interimRef.current = interimChunk.trim()
     }
 
     rec.onerror = (ev: SpeechRecognitionErrorEvent) => {
@@ -95,5 +109,5 @@ export function useBrowserSpeechCapture(active: boolean) {
     }
   }, [active, stop])
 
-  return { getTranscript, reset, stop }
+  return { getTranscript, getLiveCaption, reset, stop }
 }

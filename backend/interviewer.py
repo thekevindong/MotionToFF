@@ -330,3 +330,77 @@ def next_turn(history: History, session_id: str | None = None) -> dict[str, str]
     except Exception as exc:  # noqa: BLE001 — keep /turn green; log for debugging
         logger.warning("Gemini interviewer failed, using mock: %s", exc)
         return _mock_next_turn(history, session_id=session_id)
+
+
+MOCK_INTERJECTIONS: dict[str, list[str]] = {
+    "high_stress": [
+        "Let's take a breath — you've got this. Walk me through your thinking one step at a time.",
+        "I can tell this is intense. Slow down for a moment and anchor on the strongest point you want to make.",
+    ],
+    "composure_low": [
+        "Pause for a second — what part of your ask are you most confident about?",
+        "Let's reset. In one sentence, what's the core reason behind your number?",
+    ],
+    "hr_elevated": [
+        "No rush — take a moment to collect yourself, then continue when you're ready.",
+        "Let's ease the pace. What's the one fact you want me to remember from your answer?",
+    ],
+}
+
+INTERJECTION_SYSTEM = """You are the interviewer in a live practice session (salary negotiation or mock interview).
+The candidate's live signals show elevated stress or low composure.
+
+Respond with exactly ONE short spoken line (1–2 sentences, under 35 words).
+Help them regroup: breathe, slow down, or clarify thinking — stay warm and in character.
+Do NOT ask a new rubric question. Do NOT give scores or long coaching. No bullet points."""
+
+
+def _mock_interjection(trigger: str, session_id: str | None) -> str:
+    pool = MOCK_INTERJECTIONS.get(trigger) or MOCK_INTERJECTIONS["high_stress"]
+    settings = _session_persona_settings(session_id)
+    character_id = settings.get("character_id")
+    idx = hash((session_id or "", trigger, character_id)) % len(pool)
+    return pool[idx]
+
+
+def _gemini_interjection(
+    trigger: str, snapshot: dict[str, Any], api_key: str, session_id: str | None
+) -> str:
+    model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    persona = _persona_instruction(session_id)
+    metrics = json.dumps(snapshot, ensure_ascii=True)
+    body: dict[str, Any] = {
+        "model": model,
+        "system_instruction": f"{persona}\n\n{INTERJECTION_SYSTEM}",
+        "input": (
+            f"Trigger: {trigger}.\nLive snapshot: {metrics}.\n"
+            "Speak one brief in-character interjection now."
+        ),
+        "generation_config": {
+            "max_output_tokens": 120,
+            "thinking_level": "minimal",
+        },
+    }
+    payload = _create_interaction(body, api_key)
+    return _extract_interaction_text(payload)
+
+
+def generate_interjection(
+    session_id: str | None,
+    trigger: str,
+    snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Short interviewer overlay — does not advance turn history."""
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        text = _mock_interjection(trigger, session_id)
+        return {"text": text, "resume": True}
+
+    try:
+        text = _gemini_interjection(trigger, snap, api_key, session_id)
+        return {"text": text, "resume": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Gemini interjection failed, using mock: %s", exc)
+        text = _mock_interjection(trigger, session_id)
+        return {"text": text, "resume": True}

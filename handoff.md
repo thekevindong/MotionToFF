@@ -19,12 +19,12 @@ Use this file when starting a **new chat** or onboarding a teammate. SteelHacks 
 | Voice (ElevenLabs) | **Done** — `POST /api/stt` + `POST /api/tts` on **backend**; needs `ELEVENLABS_API_KEY` in `backend/.env` |
 | Gemini / Nemotron / Presage seams | **Key-gated** — no key → mock; key → live with mock fallback on failure |
 | Personas | **Done** — `scenario_id` + `character_id` in `settings_json`; prompt branches in `interviewer.py` |
-| Presage sidecar `:8100` | **Not built** — smoke deferred; with Presage key, `auto` uses speech fallback until sidecar exists |
+| Presage sidecar `:8100` | **Demo sidecar** — `cd backend && python -m presage_sidecar` or `npm run sidecar`; real SmartSpectra camera still via `presage_smoke/` |
 | Deploy | **Not started** — hosted API + static UI + `CORS_EXTRA_ORIGINS` |
 
 **Sessions:** `/start` → **Start session** runs `POST /sessions` (job title + optional `scenario_id` / `character_id`), uploads pending docs, stores `session_id` in `sessionStorage` (`motiontoff_session_id`). Legacy `GET /session` + `POST /turn` use a fixed default session id for quick API tests.
 
-**Keys:** Add to `backend/.env` and restart uvicorn. Presage camera vitals need the **sidecar** (not built); until then, Presage key → speech-based composure, not fixed `0.72`.
+**Keys:** Add to `backend/.env` and restart uvicorn. With sidecar on `:8100`, `auto` composure uses live vitals; without sidecar, Presage key → speech fallback (not fixed `0.72`).
 
 ---
 
@@ -37,7 +37,7 @@ Stack: FastAPI :8000, Vite frontend :5173 in frontend/. Demo works on zero keys.
 
 Done: SpeakUp UI integrated; SQLite sessions + document upload; /turn orchestration; studio voice loop + expressions; live Presage pane; Results from API; STT/TTS on backend.
 
-Next: Presage sidecar :8100 (optional), production deploy, enable locked scenario modes when prompts exist.
+Next: wire sidecar to real SmartSpectra SDK (after smoke), production deploy, enable locked scenario modes when prompts exist.
 
 Gemini prompts: backend/interviewer.py only. Do not grep node_modules or .venv. Never commit .env or backend/data/.
 ```
@@ -55,7 +55,8 @@ backend/
   judge.py           Nemotron rubric
   director.py        Nemotron session control
   nemotron_client.py Shared NIM client
-  composure.py       Presage seam → sample_composure()
+  composure.py       Presage seam → sample_composure(); sidecar probe + vitals proxy
+  presage_sidecar/   Optional :8100 demo HTTP (`python -m presage_sidecar`)
   store.py           Shim to legacy default session (prefer repository)
   data/              motiontoff.db + uploads/ (gitignored)
   .env               See .env.example
@@ -116,12 +117,14 @@ Nemotron never returns user-facing dialogue. Gemini does not own rubric or direc
 | GET | `/sessions/{id}` | `{ session_id, job_title, current_question, turns, documents, settings }` |
 | POST | `/sessions/{id}/documents` | Multipart `file` (pdf, docx, txt) |
 | POST | `/sessions/{id}/turn` | Body `{ "answer" }` → scores, decision, next_question |
+| POST | `/sessions/{id}/interject` | Body `{ "trigger", "snapshot" }` → short in-character line (rate-limited; not a full turn) |
 | GET | `/sessions/{id}/report` | Same payload as GET session |
 | POST | `/api/stt` | Speech-to-text (ElevenLabs) |
 | POST | `/api/tts` | Text-to-speech (ElevenLabs) |
 | GET | `/session` | Legacy default session |
 | POST | `/turn` | Legacy default session turn |
 | GET | `/debug` | Exercise seams; clears/seeds one turn on default session |
+| GET | `/sessions/{id}/vitals` | Sidecar proxy — pulse, breathing, composure (browser polls this, not `:8100`) |
 | GET | `/debug/presage` | Composure seam + sidecar probe |
 
 ### One turn
@@ -171,7 +174,12 @@ cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 
-# Terminal 2
+# Terminal 2 (optional — demo vitals for Presage pane + auto composure)
+cd backend
+python -m presage_sidecar
+# or from repo root: npm run sidecar
+
+# Terminal 3
 cd frontend
 npm install
 npm run dev
