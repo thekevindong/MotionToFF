@@ -195,7 +195,7 @@ def clear_session(session_id: str) -> None:
         conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM documents WHERE session_id = ?", (session_id,))
         conn.execute(
-            "UPDATE sessions SET document_ids_json = '[]' WHERE id = ?",
+            "UPDATE sessions SET document_ids_json = '[]', settings_json = '{}' WHERE id = ?",
             (session_id,),
         )
     for row in doc_rows:

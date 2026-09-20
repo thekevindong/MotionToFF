@@ -36,10 +36,8 @@ export function useInterviewMachine({ stream, onAnswerRecorded }: MachineArgs) {
   onAnswerRef.current = onAnswerRecorded
 
   // --- Audio OUT (TTS) ------------------------------------------------------
-  const stopSpeaking = useCallback(() => {
+  const stopPlaybackOnly = useCallback(() => {
     if (typeof window === "undefined") return
-    // Invalidate any in-flight speak() so a late-arriving fetch can't start playing.
-    speakTokenRef.current += 1
     window.speechSynthesis?.cancel()
     utteranceRef.current = null
     const audio = audioRef.current
@@ -50,6 +48,12 @@ export function useInterviewMachine({ stream, onAnswerRecorded }: MachineArgs) {
       audioRef.current = null
     }
   }, [])
+
+  const stopSpeaking = useCallback(() => {
+    stopPlaybackOnly()
+    // Invalidate any in-flight speak() so a late-arriving fetch can't start playing.
+    speakTokenRef.current += 1
+  }, [stopPlaybackOnly])
 
   // --- Audio IN (MediaRecorder) --------------------------------------------
   const stopRecording = useCallback(() => {
@@ -102,6 +106,7 @@ export function useInterviewMachine({ stream, onAnswerRecorded }: MachineArgs) {
 
   const speak = useCallback(
     (text: string, onDone?: () => void) => {
+      stopPlaybackOnly()
       const token = ++speakTokenRef.current
       console.log("[v0] speaking (elevenlabs):", text)
       fetch("/api/tts", {
@@ -122,7 +127,14 @@ export function useInterviewMachine({ stream, onAnswerRecorded }: MachineArgs) {
             if (audioRef.current === audio) audioRef.current = null
             if (token === speakTokenRef.current) onDone?.()
           }
-          await audio.play()
+          try {
+            await audio.play()
+          } catch (playErr) {
+            if (token !== speakTokenRef.current) return
+            console.log("[v0] audio.play failed, falling back to browser:", String(playErr))
+            stopPlaybackOnly()
+            speakWithBrowser(text, onDone)
+          }
         })
         .catch((err) => {
           if (token !== speakTokenRef.current) return
@@ -130,20 +142,21 @@ export function useInterviewMachine({ stream, onAnswerRecorded }: MachineArgs) {
           speakWithBrowser(text, onDone)
         })
     },
-    [speakWithBrowser],
+    [speakWithBrowser, stopPlaybackOnly],
   )
 
   // --- Transitions: tear down the old direction, start the new one ----------
   const ask = useCallback(
     (question: string) => {
       stopRecording()
+      stopSpeaking()
       setState("ASKING")
       speak(question, () => {
         // Auto-advance to LISTENING when the interviewer finishes speaking.
         setState((s) => (s === "ASKING" ? "LISTENING" : s))
       })
     },
-    [speak, stopRecording],
+    [speak, stopRecording, stopSpeaking],
   )
 
   const listen = useCallback(() => {

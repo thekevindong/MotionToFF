@@ -24,7 +24,7 @@ from director import decide
 
 from documents import extract_text, validate_upload
 
-from interviewer import next_turn
+from interviewer import next_turn, opening_question
 
 from judge import score
 
@@ -174,7 +174,7 @@ def _current_question(session_id: str) -> dict[str, str]:
 
     if not records:
 
-        return next_turn([], session_id=session_id)
+        return opening_question(session_id)
 
     return records[-1]["next_question"]
 

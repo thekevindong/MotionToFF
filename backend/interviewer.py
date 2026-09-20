@@ -24,13 +24,19 @@ DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 INTERACTIONS_API_REVISION = "2026-05-20"
 SETTINGS_INTERACTION_ID_KEY = "gemini_last_interaction_id"
+SETTINGS_OPENING_QUESTION_KEY = "cached_opening_question"
 
 History = list[dict[str, Any]]
 
-SYSTEM_INSTRUCTION = """You are a professional job interviewer conducting a practice mock interview.
-Ask exactly ONE clear spoken question per turn — no preamble, scoring, or feedback.
-Stay concise (one or two sentences). Do not repeat a question already asked in the transcript.
-If the conversation is empty, open with a strong first interview question."""
+SYSTEM_INSTRUCTION = """You are Maya Chen, a professional interviewer in a live practice mock interview.
+
+Each turn (except the very first), respond in a natural spoken style:
+1. Start with a brief, warm acknowledgment of what the candidate just said — one short sentence that shows you listened (no scoring, no coaching, no long feedback).
+2. Then ask exactly ONE new interview question (one or two sentences).
+
+On the first turn only (candidate just joined), skip the acknowledgment and ask a strong opening question.
+
+Never repeat a question already asked. Keep the whole turn concise (about 2–4 sentences). No bullet points or section labels."""
 
 CONTEXT_MAX_CHARS = 8000
 
@@ -38,7 +44,7 @@ FIRST_TURN_INPUT = (
     "The candidate has joined the call. Ask your first interview question now."
 )
 FOLLOWUP_SUFFIX = (
-    "\n\nAsk the next interview question only — one clear question, no feedback or preamble."
+    "\n\nRespond with a brief acknowledgment of their answer, then your next interview question."
 )
 
 
@@ -79,6 +85,12 @@ def build_interviewer_context(session_id: str | None) -> str:
 def _mock_next_turn(history: History) -> dict[str, str]:
     turn_index = sum(1 for entry in history if entry.get("role") == "interviewer")
     question = MOCK_QUESTIONS[turn_index % len(MOCK_QUESTIONS)]
+    if turn_index == 0:
+        return {"role": "interviewer", "text": question}
+    answer = _latest_candidate_answer(history)
+    if answer:
+        text = f"Thanks — that's helpful context. {question}"
+        return {"role": "interviewer", "text": text}
     return {"role": "interviewer", "text": question}
 
 
@@ -100,7 +112,7 @@ def _history_as_recovery_input(history: History) -> str:
         label = "Interviewer" if role == "interviewer" else "Candidate"
         lines.append(f"{label}: {text}")
     lines.append(
-        "Interviewer: (ask the next interview question now — one question only)"
+        "Interviewer: (briefly acknowledge their last answer, then ask the next interview question)"
     )
     return "\n".join(lines)
 
@@ -183,7 +195,10 @@ def _gemini_next_turn(
 
     body: dict[str, Any] = {
         "model": model,
-        "generation_config": {"max_output_tokens": 256},
+        "generation_config": {
+            "max_output_tokens": 1024,
+            "thinking_level": "minimal",
+        },
     }
 
     if not history:
@@ -207,6 +222,20 @@ def _gemini_next_turn(
 
     question = _extract_interaction_text(payload)
     return {"role": "interviewer", "text": question}
+
+
+def opening_question(session_id: str) -> dict[str, str]:
+    """First question for a session — generated once, then cached (avoids duplicate API/TTS)."""
+    from repository import get_session_settings, set_session_setting
+
+    settings = get_session_settings(session_id)
+    cached = settings.get(SETTINGS_OPENING_QUESTION_KEY)
+    if isinstance(cached, str) and cached.strip():
+        return {"role": "interviewer", "text": cached.strip()}
+
+    line = next_turn([], session_id=session_id)
+    set_session_setting(session_id, SETTINGS_OPENING_QUESTION_KEY, line["text"])
+    return line
 
 
 def next_turn(history: History, session_id: str | None = None) -> dict[str, str]:
