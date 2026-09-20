@@ -9,6 +9,13 @@
   --line: rgba(13, 13, 13, 0.12);
   --line-strong: rgba(13, 13, 13, 0.22);
 
+  /* warm tan chrome */
+  --sand: #e4d9c3;
+  --sand-2: #efe7d6;
+  --sand-3: #d8cbb0;
+  --sand-line: rgba(13, 13, 13, 0.14);
+  --sand-line-strong: rgba(13, 13, 13, 0.26);
+
   /* dark surfaces */
   --night: #0d0d0d;
   --night-2: #161616;

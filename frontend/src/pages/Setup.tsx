@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Navigate } from '../App'
+import { setSession } from '../session'
 import './Setup.css'
 
 type Mode = {
@@ -52,32 +53,106 @@ const SALARY_CHARACTERS: Character[] = [
   },
 ]
 
-type Step = 'mode' | 'character' | 'launch'
+/* ---------- Reusable dropdown ---------- */
+type Option = { value: string; label: string; sub?: string; disabled?: boolean }
 
-/* Draggable Zoom-style self-view camera. */
+function Dropdown({
+  label,
+  placeholder,
+  value,
+  options,
+  onSelect,
+  disabled,
+}: {
+  label: string
+  placeholder: string
+  value: string | null
+  options: Option[]
+  onSelect: (v: string) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  const selected = options.find((o) => o.value === value)
+
+  return (
+    <div className={`dd ${disabled ? 'is-disabled' : ''}`} ref={ref}>
+      <span className="dd-label">{label}</span>
+      <button
+        type="button"
+        className={`dd-trigger ${open ? 'is-open' : ''}`}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className={`dd-value ${selected ? '' : 'is-placeholder'}`}>
+          {selected ? selected.label : placeholder}
+        </span>
+        <svg className="dd-arrow" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        </svg>
+      </button>
+      {open && (
+        <ul className="dd-menu" role="listbox">
+          {options.map((o) => (
+            <li key={o.value} role="option" aria-selected={o.value === value}>
+              <button
+                type="button"
+                className={`dd-item ${o.value === value ? 'is-active' : ''} ${o.disabled ? 'is-locked' : ''}`}
+                onClick={() => {
+                  if (o.disabled) return
+                  onSelect(o.value)
+                  setOpen(false)
+                }}
+                disabled={o.disabled}
+              >
+                <span className="dd-item-main">{o.label}</span>
+                {o.sub && <span className="dd-item-sub">{o.sub}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+/* ---------- Draggable + resizable self-view ---------- */
 function CameraTile() {
   const tileRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const drag = useRef<{ active: boolean; offX: number; offY: number }>({
-    active: false,
-    offX: 0,
-    offY: 0,
-  })
+  const drag = useRef({ active: false, offX: 0, offY: 0 })
+  const resize = useRef({ active: false, startX: 0, startW: 0 })
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const [width, setWidth] = useState(320)
   const [camOn, setCamOn] = useState(false)
   const [dragging, setDragging] = useState(false)
 
-  const clamp = useCallback((x: number, y: number) => {
-    const el = tileRef.current
-    const w = el?.offsetWidth ?? 230
-    const h = el?.offsetHeight ?? 150
-    const maxX = window.innerWidth - w - 16
-    const maxY = window.innerHeight - h - 16
-    return { x: Math.max(16, Math.min(x, maxX)), y: Math.max(16, Math.min(y, maxY)) }
-  }, [])
+  const clamp = useCallback(
+    (x: number, y: number) => {
+      const el = tileRef.current
+      const w = el?.offsetWidth ?? width
+      const h = el?.offsetHeight ?? width * 0.72
+      const maxX = window.innerWidth - w - 16
+      const maxY = window.innerHeight - h - 16
+      return { x: Math.max(16, Math.min(x, maxX)), y: Math.max(16, Math.min(y, maxY)) }
+    },
+    [width],
+  )
 
-  const onPointerDown = (e: React.PointerEvent) => {
+  const onGripDown = (e: React.PointerEvent) => {
     const el = tileRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
@@ -86,13 +161,24 @@ function CameraTile() {
     ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
   }
 
+  const onResizeDown = (e: React.PointerEvent) => {
+    e.stopPropagation()
+    resize.current = { active: true, startX: e.clientX, startW: width }
+    ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+  }
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
-      if (!drag.current.active) return
-      setPos(clamp(e.clientX - drag.current.offX, e.clientY - drag.current.offY))
+      if (drag.current.active) {
+        setPos(clamp(e.clientX - drag.current.offX, e.clientY - drag.current.offY))
+      } else if (resize.current.active) {
+        const next = resize.current.startW + (e.clientX - resize.current.startX)
+        setWidth(Math.max(240, Math.min(next, 560)))
+      }
     }
     const onUp = () => {
       drag.current.active = false
+      resize.current.active = false
       setDragging(false)
     }
     window.addEventListener('pointermove', onMove)
@@ -129,9 +215,9 @@ function CameraTile() {
     <div
       ref={tileRef}
       className={`camtile ${dragging ? 'is-dragging' : ''}`}
-      style={pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : undefined}
+      style={{ width, ...(pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : {}) }}
     >
-      <div className="camtile-grip" onPointerDown={onPointerDown} role="presentation">
+      <div className="camtile-grip" onPointerDown={onGripDown} role="presentation">
         <span className="camtile-grip-dots" aria-hidden="true">
           <i /> <i /> <i /> <i /> <i /> <i />
         </span>
@@ -146,194 +232,260 @@ function CameraTile() {
             <span className="camtile-off-label">Camera off</span>
           </div>
         )}
-      </div>
-      <div className="camtile-bar">
         <button
           type="button"
-          className={`camtile-btn ${camOn ? 'is-active' : ''}`}
+          className={`camtile-toggle ${camOn ? 'is-active' : ''}`}
           onClick={toggleCam}
           aria-pressed={camOn}
         >
-          {camOn ? 'Turn off camera' : 'Turn on camera'}
+          {camOn ? 'Turn off' : 'Turn on'}
         </button>
+        <span className="camtile-resize" onPointerDown={onResizeDown} role="presentation" aria-label="Resize camera">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M14 6v8H6M14 14 6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+          </svg>
+        </span>
       </div>
     </div>
   )
 }
 
-function MeetingControls({ onLeave }: { onLeave: () => void }) {
+/* ---------- Presage live-stats pane ---------- */
+const PRESAGE_METRICS = [
+  { label: 'Composure', value: 82, unit: '' },
+  { label: 'Eye contact', value: 74, unit: '%' },
+  { label: 'Vocal steadiness', value: 68, unit: '%' },
+  { label: 'Pace', value: 128, unit: ' wpm', display: 71 },
+  { label: 'Filler words', value: 6, unit: '', display: 40, invert: true },
+]
+
+function PresagePane({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) return null
   return (
-    <div className="controls" role="toolbar" aria-label="Meeting controls">
-      <button type="button" className="ctrl" aria-label="Microphone">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.6" />
-          <path d="M6 11a6 6 0 0 0 12 0M12 17v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-        <span>Mute</span>
-      </button>
-      <button type="button" className="ctrl" aria-label="Camera">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="3" y="6" width="12" height="12" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
-          <path d="M15 10.5 21 7v10l-6-3.5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        </svg>
-        <span>Video</span>
-      </button>
-      <button type="button" className="ctrl ctrl--leave" onClick={onLeave}>
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path
-            d="M5 5v14M9 12h11m0 0-3.5-3.5M20 12l-3.5 3.5"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span>Leave</span>
-      </button>
-    </div>
+    <aside className="presage" aria-label="Presage live statistics">
+      <header className="presage-head">
+        <span className="presage-live">
+          <span className="presage-live-dot" />
+          Presage
+        </span>
+        <button type="button" className="presage-close" onClick={onClose} aria-label="Hide statistics">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+        </button>
+      </header>
+      <p className="presage-caption">Live read on your delivery</p>
+      <ul className="presage-list">
+        {PRESAGE_METRICS.map((m) => (
+          <li key={m.label} className="presage-row">
+            <span className="presage-row-top">
+              <span className="presage-row-label">{m.label}</span>
+              <span className="presage-row-value">
+                {m.value}
+                {m.unit}
+              </span>
+            </span>
+            <span className="presage-bar">
+              <span
+                className={`presage-bar-fill ${m.invert ? 'is-warn' : ''}`}
+                style={{ width: `${m.display ?? m.value}%` }}
+              />
+            </span>
+          </li>
+        ))}
+      </ul>
+    </aside>
   )
 }
 
-export default function Setup({ navigate }: { navigate: Navigate }) {
-  const [step, setStep] = useState<Step>('mode')
-  const [mode, setMode] = useState<Mode | null>(null)
-  const [character, setCharacter] = useState<Character | null>(null)
+/* ---------- Meeting controls ---------- */
+function fmt(sec: number) {
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
 
-  const pickMode = (m: Mode) => {
-    if (!m.ready) return
-    setMode(m)
-    setCharacter(null)
-    setStep('character')
-  }
+export default function Setup({ navigate }: { navigate: Navigate }) {
+  const [modeId, setModeId] = useState<string | null>('salary')
+  const [charId, setCharId] = useState<string | null>(null)
+  const [started, setStarted] = useState(false)
+  const [seconds, setSeconds] = useState(0)
+  const [statsOpen, setStatsOpen] = useState(true)
+  const [micOn, setMicOn] = useState(true)
+
+  const mode = MODES.find((m) => m.id === modeId) ?? null
+  const character = SALARY_CHARACTERS.find((c) => c.id === charId) ?? null
+
+  useEffect(() => {
+    if (!started) return
+    const id = window.setInterval(() => setSeconds((s) => s + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [started])
 
   const startSession = () => {
-    if (!character) return
-    setStep('launch')
+    if (!mode || !character) return
+    setSeconds(0)
+    setStarted(true)
+  }
+
+  const endSession = () => {
+    if (mode && character) {
+      setSession({
+        mode: mode.title,
+        opponent: character.name,
+        opponentRole: character.role,
+        tone: character.tone,
+        opponentImg: character.img,
+        durationSec: seconds,
+      })
+    }
+    navigate('/results')
   }
 
   return (
-    <div className="room">
-      <div className="room-glow" aria-hidden="true" />
-
-      <header className="room-top">
-        <button type="button" className="room-brand" onClick={() => navigate('/')} aria-label="SpeakUp home">
-          <img src="/brand/speakup-logo-horizontal-white.png" alt="SpeakUp" height={30} />
+    <div className="studio">
+      {/* Light tan top bar */}
+      <header className="studio-top">
+        <button type="button" className="studio-brand" onClick={() => navigate('/')} aria-label="SpeakUp home">
+          <img src="/brand/speakup-logo-horizontal.png" alt="SpeakUp" height={26} />
         </button>
-        <div className="room-quote">
-          <span className="room-quote-mark">“</span>
-          You cannot get what you never ask for. Practice the ask.
+
+        <div className="studio-selectors">
+          <Dropdown
+            label="Scenario"
+            placeholder="Choose a scenario"
+            value={modeId}
+            onSelect={(v) => {
+              setModeId(v)
+              setCharId(null)
+              setStarted(false)
+            }}
+            options={MODES.map((m) => ({
+              value: m.id,
+              label: m.title,
+              sub: m.ready ? m.desc : 'Coming soon',
+              disabled: !m.ready,
+            }))}
+          />
+          <Dropdown
+            label="Opponent"
+            placeholder="Choose who you face"
+            value={charId}
+            disabled={!mode}
+            onSelect={(v) => {
+              setCharId(v)
+              setStarted(false)
+            }}
+            options={SALARY_CHARACTERS.map((c) => ({
+              value: c.id,
+              label: c.name,
+              sub: `${c.tone} · ${c.role}`,
+            }))}
+          />
         </div>
-        <span className="room-live">
-          <span className="room-live-dot" />
-          Studio
-        </span>
+
+        <div className="studio-top-right">
+          <span className="studio-timer" data-live={started}>
+            {started ? fmt(seconds) : 'Ready'}
+          </span>
+        </div>
       </header>
 
-      <main className="room-main">
-        {step !== 'launch' && (
-          <div className="stepper" aria-hidden="true">
-            <span className={`stepper-item ${step === 'mode' ? 'is-active' : 'is-done'}`}>1 · Mode</span>
-            <span className="stepper-line" />
-            <span className={`stepper-item ${step === 'character' ? 'is-active' : ''}`}>2 · Opponent</span>
-          </div>
-        )}
+      {/* Black zoom stage */}
+      <div className="stage-wrap">
+        <div className="stage">
+          <img className="stage-watermark" src="/brand/speakup-icon-white.png" alt="" aria-hidden="true" />
 
-        {step === 'mode' && (
-          <section className="panel" key="mode">
-            <h1 className="panel-title">What do you want to practice?</h1>
-            <p className="panel-sub">Pick a scenario. More open up as you go. Salary Negotiation is live now.</p>
-            <div className="mode-grid">
-              {MODES.map((m, i) => (
-                <button
-                  type="button"
-                  key={m.id}
-                  className={`mode-card ${m.ready ? '' : 'is-locked'}`}
-                  style={{ animationDelay: `${i * 70}ms` }}
-                  onClick={() => pickMode(m)}
-                  disabled={!m.ready}
-                >
-                  <span className="mode-index">0{i + 1}</span>
-                  <span className="mode-name">{m.title}</span>
-                  <span className="mode-desc">{m.desc}</span>
-                  <span className="mode-flag">{m.ready ? 'Available' : 'Coming soon'}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {step === 'character' && mode && (
-          <section className="panel" key="character">
-            <button type="button" className="panel-back" onClick={() => setStep('mode')}>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              {mode.title}
+          {/* toggle for the presage pane, top-left */}
+          {!statsOpen && (
+            <button type="button" className="presage-toggle" onClick={() => setStatsOpen(true)}>
+              <span className="presage-live-dot" />
+              Show stats
             </button>
-            <h1 className="panel-title">Choose who you are up against</h1>
-            <p className="panel-sub">Each opponent negotiates with a different temperament. Pick your challenge.</p>
-            <div className="char-grid">
-              {SALARY_CHARACTERS.map((c, i) => (
-                <button
-                  type="button"
-                  key={c.id}
-                  className={`char-card ${character?.id === c.id ? 'is-selected' : ''}`}
-                  style={{ animationDelay: `${i * 80}ms` }}
-                  onClick={() => setCharacter(c)}
-                  aria-pressed={character?.id === c.id}
-                >
-                  <span className="char-photo">
-                    <img src={c.img || '/placeholder.svg'} alt={c.name} />
-                    <span className={`char-tone char-tone--${c.id}`}>{c.tone}</span>
-                  </span>
-                  <span className="char-body">
-                    <span className="char-role">{c.role}</span>
-                    <span className="char-name">{c.name}</span>
-                    <span className="char-desc">{c.desc}</span>
-                  </span>
-                  <span className="char-check" aria-hidden="true">
-                    <svg viewBox="0 0 24 24">
-                      <path d="M5 12.5l4.5 4.5L19 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                    </svg>
-                  </span>
-                </button>
-              ))}
+          )}
+          <PresagePane open={statsOpen} onClose={() => setStatsOpen(false)} />
+
+          {/* opponent "video" */}
+          {character ? (
+            <div className="opponent">
+              <img className="opponent-video" src={character.img || '/placeholder.svg'} alt={character.name} />
+              <span className="opponent-tag">
+                <span className={`opponent-dot opponent-dot--${character.id}`} />
+                {character.name} · {character.tone}
+              </span>
             </div>
-            <div className="panel-cta">
-              <button type="button" className="start-btn" onClick={startSession} disabled={!character}>
-                {character ? `Start against ${character.name}` : 'Select an opponent to start'}
-                {character && (
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                )}
+          ) : (
+            <div className="stage-empty">
+              <p className="stage-empty-title">Your room is ready</p>
+              <p className="stage-empty-sub">Pick a scenario and an opponent above to begin.</p>
+            </div>
+          )}
+
+          {/* pre-start overlay */}
+          {character && !started && (
+            <div className="stage-cta">
+              <button type="button" className="stage-start" onClick={startSession}>
+                Start session
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                </svg>
               </button>
             </div>
-          </section>
-        )}
+          )}
 
-        {step === 'launch' && character && (
-          <section className="launch" key="launch">
-            <span className="launch-ring" aria-hidden="true" />
-            <img className="launch-photo" src={character.img || '/placeholder.svg'} alt={character.name} />
-            <h1 className="launch-title">Connecting you with {character.name}</h1>
-            <p className="launch-sub">
-              {mode?.title} · {character.tone} tone. Take a breath. The room opens in a moment.
-            </p>
-            <div className="launch-dots" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </div>
-            <button type="button" className="launch-back" onClick={() => setStep('character')}>
-              Choose a different opponent
+          <CameraTile />
+        </div>
+      </div>
+
+      {/* Light tan controls */}
+      <footer className="studio-controls" role="toolbar" aria-label="Session controls">
+        <div className="controls-group">
+          <button
+            type="button"
+            className={`ctrl ${micOn ? '' : 'is-off'}`}
+            onClick={() => setMicOn((m) => !m)}
+            aria-pressed={micOn}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.6" />
+              <path d="M6 11a6 6 0 0 0 12 0M12 17v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            <span>{micOn ? 'Mute' : 'Unmute'}</span>
+          </button>
+          <button
+            type="button"
+            className={`ctrl ${statsOpen ? 'is-active' : ''}`}
+            onClick={() => setStatsOpen((s) => !s)}
+            aria-pressed={statsOpen}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 19V9M12 19V5M19 19v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <span>Stats</span>
+          </button>
+        </div>
+
+        <div className="controls-center">
+          {started ? (
+            <button type="button" className="end-btn" onClick={endSession}>
+              End &amp; get report
             </button>
-          </section>
-        )}
-      </main>
+          ) : (
+            <button type="button" className="end-btn end-btn--ghost" onClick={startSession} disabled={!character}>
+              {character ? 'Start session' : 'Select an opponent'}
+            </button>
+          )}
+        </div>
 
-      <MeetingControls onLeave={() => navigate('/')} />
-      <CameraTile />
+        <div className="controls-group controls-group--right">
+          <button type="button" className="ctrl ctrl--leave" onClick={() => navigate('/')}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5v14M9 12h11m0 0-3.5-3.5M20 12l-3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            </svg>
+            <span>Leave</span>
+          </button>
+        </div>
+      </footer>
     </div>
   )
 }

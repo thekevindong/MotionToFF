@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import Home from './pages/Home'
 import Setup from './pages/Setup'
+import Results from './pages/Results'
 
 export type Navigate = (path: string) => void
 
-type View = 'home' | 'start'
+type View = 'home' | 'start' | 'results'
 
 function viewFromPath(path: string): View {
   const clean = path.replace(/\/$/, '') || '/'
-  return clean === '/start' ? 'start' : 'home'
+  if (clean === '/start') return 'start'
+  if (clean === '/results') return 'results'
+  return 'home'
 }
 
 function App() {
@@ -30,7 +33,9 @@ function App() {
     window.scrollTo({ top: 0 })
   }, [])
 
-  return view === 'start' ? <Setup navigate={navigate} /> : <Home navigate={navigate} />
+  if (view === 'start') return <Setup navigate={navigate} />
+  if (view === 'results') return <Results navigate={navigate} />
+  return <Home navigate={navigate} />
 }
 
 export default App
