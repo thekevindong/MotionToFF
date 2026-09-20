@@ -3,7 +3,7 @@ import type { Navigate } from '../App'
 import './Home.css'
 
 /* Swap this for the real SpeakUp demo once it is published on YouTube. */
-const DEMO_VIDEO_ID = 'ScMzIvxBSi4'
+const DEMO_VIDEO_ID = 'XWsfjePmINM'
 
 type FloatingWord = {
   text: string
