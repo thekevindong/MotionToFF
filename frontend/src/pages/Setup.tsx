@@ -16,6 +16,7 @@ import {
 } from '../config/speaking-duration'
 import {
   thesisPackById,
+  thesisSessionDurationSec,
   type ThesisPackId,
 } from '../config/thesis-duration'
 import { useBrowserSpeechCapture } from '../hooks/use-browser-speech-capture'
@@ -947,7 +948,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         const pack = thesisPackById(thesisPackId)
         if (!pack) return false
         const defenseFile = pendingContextFiles[0]
-        const durationSec = pack.presentationSec + pack.qaEstimateSec
+        const durationSec = thesisSessionDurationSec(pack)
         const { session_id } = await createSession({
           jobTitle: `Thesis defense — ${defenseFile.name}`,
           scenarioId: 'thesis',
@@ -1034,7 +1035,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         mode.id === 'speaking'
           ? speakingDurationSeconds(speakingDurationId)
           : mode.id === 'thesis' && thesisPack
-            ? thesisPack.presentationSec + thesisPack.qaEstimateSec
+            ? thesisSessionDurationSec(thesisPack)
             : sessionDurationSec,
       speechId: mode.id === 'speaking' ? speechId ?? undefined : undefined,
       speakingDurationId: mode.id === 'speaking' ? speakingDurationId : undefined,
@@ -1174,11 +1175,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     setThesisPackId(id)
     const pack = thesisPackById(id)
     if (pack) {
-      setSessionDurationSec(pack.presentationSec + pack.qaEstimateSec)
+      setSessionDurationSec(thesisSessionDurationSec(pack))
     }
     writePrepDefaults({
       thesisPackId: id,
-      sessionDurationSec: pack ? pack.presentationSec + pack.qaEstimateSec : undefined,
+      sessionDurationSec: pack ? thesisSessionDurationSec(pack) : undefined,
     })
   }
 
@@ -1234,7 +1235,7 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     }
     if (m.id === 'thesis') {
       const pack = thesisPackById(thesisPackId)
-      if (pack) setSessionDurationSec(pack.presentationSec + pack.qaEstimateSec)
+      if (pack) setSessionDurationSec(thesisSessionDurationSec(pack))
     }
     writePrepDefaults({ modeId: m.id })
   }
