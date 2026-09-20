@@ -16,6 +16,8 @@ export function useVoiceActivity(
   enabled: boolean,
   mode: 'utterance' | 'barge-in',
   callbacks: VoiceActivityCallbacks,
+  /** Re-bind when mic hardware mute toggles (tracks may enable after `enabled` flips). */
+  micGate = true,
 ) {
   const cbRef = useRef(callbacks)
   cbRef.current = callbacks
@@ -29,6 +31,7 @@ export function useVoiceActivity(
     if (audioTracks.length === 0) return
 
     const audioCtx = new AudioContext()
+    void audioCtx.resume()
     const source = audioCtx.createMediaStreamSource(new MediaStream(audioTracks))
     const analyser = audioCtx.createAnalyser()
     analyser.fftSize = VAD_CONFIG.fftSize
@@ -40,7 +43,10 @@ export function useVoiceActivity(
     let speechStartedAtMs: number | null = null
     let hangoverStartedAtMs: number | null = null
     let noiseFloorDb = VAD_CONFIG.speakThresholdDb
-    let calibrateUntil = performance.now() + VAD_CONFIG.noiseCalibrateMs
+    let calibrateUntil =
+      modeRef.current === 'barge-in'
+        ? performance.now()
+        : performance.now() + VAD_CONFIG.noiseCalibrateMs
     let thresholdDb = noiseFloorDb + VAD_CONFIG.noiseMarginDb
 
     const id = window.setInterval(() => {
@@ -80,5 +86,5 @@ export function useVoiceActivity(
       source.disconnect()
       void audioCtx.close()
     }
-  }, [enabled, stream])
+  }, [enabled, stream, micGate])
 }

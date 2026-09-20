@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { Navigate } from '../App'
 import type { DeliveryMood, InterjectTrigger } from '../config/composure-thresholds'
@@ -44,6 +44,7 @@ import {
 import { getStoredSessionId, setStoredSessionId } from '../lib/session-storage'
 import { setSession } from '../session'
 import { sttBackoffDelayMs, transcribeAudio } from '../voice/stt'
+import { VAD_CONFIG } from '../voice/vad-config'
 import { StudioLive } from './StudioLive'
 import { StudioPrep } from './StudioPrep'
 import './Setup.css'
@@ -123,6 +124,11 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   const [userCaption, setUserCaption] = useState('')
   const [lingeringUserCaption, setLingeringUserCaption] = useState('')
   const lingeringUserCaptionRef = useRef('')
+  const utterancePausedByMuteRef = useRef(false)
+  const resumeUtteranceAfterUnmuteRef = useRef(false)
+  const unmuteSilenceTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const userUtteranceActiveRef = useRef(false)
+  const commitUserTurnRef = useRef<(manual: boolean) => Promise<void>>(async () => {})
   const [userUtteranceActive, setUserUtteranceActive] = useState(false)
   const [interjectionCaption, setInterjectionCaption] = useState<string | null>(null)
   const [lastInterjectionTrigger, setLastInterjectionTrigger] = useState<InterjectTrigger | null>(null)
@@ -418,17 +424,36 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       : 'ai'
   const stageUserCaption = userCaptionFloor ? userCaption : lingeringUserCaption
 
+  const clearUnmuteSilenceTimer = useCallback(() => {
+    if (unmuteSilenceTimerRef.current !== null) {
+      window.clearTimeout(unmuteSilenceTimerRef.current)
+      unmuteSilenceTimerRef.current = null
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    setMicEnabled(micOn)
+  }, [micOn, setMicEnabled])
+
+  useLayoutEffect(() => {
+    setVideoEnabled(videoOn)
+  }, [videoOn, setVideoEnabled])
+
   const commitUserTurn = useCallback(
     async (manual: boolean) => {
       if (sessionClosingRef.current) return
       if (stateRef.current !== 'LISTENING') return
+      clearUnmuteSilenceTimer()
+      resumeUtteranceAfterUnmuteRef.current = false
+      utterancePausedByMuteRef.current = false
       setUserUtteranceActive(false)
       manualSubmitRef.current = manual
       const hadRecording = finalizeUserTurn()
       if (!isCloudSttActiveNow()) {
         browserSpeech.stop()
-        const text = browserSpeech.getTranscript()
-        const live = browserSpeech.getLiveCaption().trim() || text.trim()
+        const text =
+          browserCaptionAnswer(browserSpeech) || lingeringUserCaptionRef.current.trim()
+        const live = text.trim()
         if (live) setLingeringUserCaption(live)
         browserSpeech.reset()
         setUserCaption('')
@@ -450,8 +475,10 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
       }
       armTurnWatchdog()
     },
-    [armTurnWatchdog, browserSpeech, finalizeUserTurn, isCloudSttActiveNow],
+    [armTurnWatchdog, browserSpeech, clearUnmuteSilenceTimer, finalizeUserTurn, isCloudSttActiveNow],
   )
+
+  commitUserTurnRef.current = commitUserTurn
 
   const vadMode =
     state === 'ASKING' && speakingPhase === 'audible' ? 'barge-in' : 'utterance'
@@ -461,32 +488,44 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
     ((state === 'LISTENING' && speakingPhase === 'idle') ||
       (state === 'ASKING' && speakingPhase === 'audible'))
 
-  useVoiceActivity(stream, vadEnabled, vadMode, {
-    onSpeechStart: () => {
-      if (stateRef.current !== 'LISTENING') return
-      setUserUtteranceActive(true)
-      browserSpeech.reset()
-      setUserCaption('')
-      setLingeringUserCaption('')
-      startUtteranceRecording()
-    },
-    onSpeechEnd: (hadMinSpeech) => {
-      if (stateRef.current !== 'LISTENING') return
-      if (!hadMinSpeech) {
-        setUserUtteranceActive(false)
+  useVoiceActivity(
+    stream,
+    vadEnabled,
+    vadMode,
+    {
+      onSpeechStart: () => {
+        if (stateRef.current !== 'LISTENING') return
+        clearUnmuteSilenceTimer()
+        setUserUtteranceActive(true)
+        if (resumeUtteranceAfterUnmuteRef.current) {
+          resumeUtteranceAfterUnmuteRef.current = false
+        } else {
+          browserSpeech.reset()
+          setUserCaption('')
+          setLingeringUserCaption('')
+        }
+        startUtteranceRecording()
+      },
+      onSpeechEnd: (hadMinSpeech) => {
+        if (stateRef.current !== 'LISTENING') return
+        clearUnmuteSilenceTimer()
+        if (!hadMinSpeech) {
+          setUserUtteranceActive(false)
+          armListenMode()
+          return
+        }
+        void commitUserTurn(false)
+      },
+      onBargeIn: () => {
+        if (stateRef.current !== 'ASKING' || speakingPhaseRef.current !== 'audible') return
+        stopSpeaking()
+        browserSpeech.reset()
+        setUserCaption('')
         armListenMode()
-        return
-      }
-      void commitUserTurn(false)
+      },
     },
-    onBargeIn: () => {
-      if (stateRef.current !== 'ASKING' || speakingPhaseRef.current !== 'audible') return
-      stopSpeaking()
-      browserSpeech.reset()
-      setUserCaption('')
-      armListenMode()
-    },
-  })
+    micOn,
+  )
   const reactionSessionId = started ? getStoredSessionId() : null
   const presageVitals = usePresageVitals(sessionLive, reactionSessionId)
 
@@ -599,19 +638,40 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
   }, [lingeringUserCaption])
 
   useEffect(() => {
-    setMicEnabled(micOn)
-  }, [micOn, setMicEnabled])
+    userUtteranceActiveRef.current = userUtteranceActive
+  }, [userUtteranceActive])
 
   useEffect(() => {
     if (micOn || state !== 'LISTENING') return
+    clearUnmuteSilenceTimer()
     const preserved = browserCaptionAnswer(browserSpeechApiRef.current)
-    if (preserved) setLingeringUserCaption(preserved)
+    const hadUtterance =
+      userUtteranceActiveRef.current ||
+      Boolean(preserved) ||
+      Boolean(lingeringUserCaptionRef.current.trim())
+    if (hadUtterance) {
+      utterancePausedByMuteRef.current = true
+      if (preserved) setLingeringUserCaption(preserved)
+    }
     setUserUtteranceActive(false)
-  }, [micOn, state])
+  }, [micOn, state, clearUnmuteSilenceTimer])
 
   useEffect(() => {
-    setVideoEnabled(videoOn)
-  }, [videoOn, setVideoEnabled])
+    if (!micOn || state !== 'LISTENING') return
+    if (!utterancePausedByMuteRef.current) return
+    utterancePausedByMuteRef.current = false
+    resumeUtteranceAfterUnmuteRef.current = true
+    setUserUtteranceActive(true)
+    startUtteranceRecording()
+    clearUnmuteSilenceTimer()
+    unmuteSilenceTimerRef.current = window.setTimeout(() => {
+      unmuteSilenceTimerRef.current = null
+      if (stateRef.current !== 'LISTENING') return
+      void commitUserTurnRef.current(false)
+    }, VAD_CONFIG.silenceHangoverMs)
+  }, [micOn, state, clearUnmuteSilenceTimer, startUtteranceRecording])
+
+  useEffect(() => () => clearUnmuteSilenceTimer(), [clearUnmuteSilenceTimer])
 
   useEffect(() => {
     const clean = window.location.pathname.replace(/\/$/, '') || '/'
@@ -965,7 +1025,13 @@ export default function Setup({ navigate }: { navigate: Navigate }) {
         videoRef={selfVideoRef}
         stageRef={stageRef}
         micOn={micOn}
-        onToggleMic={() => setMicOn((m) => !m)}
+        onToggleMic={() =>
+          setMicOn((m) => {
+            const next = !m
+            setMicEnabled(next)
+            return next
+          })
+        }
         controlsBusy={controlsBusy}
         onSubmitAnswer={submitAnswer}
         onAnswerNow={() => listen()}
